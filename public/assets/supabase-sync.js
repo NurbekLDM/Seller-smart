@@ -23,7 +23,9 @@
     return typeof key === 'string'
       && /^srerp_[a-zA-Z0-9_-]{1,100}$/.test(key)
       && !key.startsWith('srerp_embedded_applied_')
-      && !/password|secret|credential|session|token|pin|auth_users/i.test(key);
+      // initialized/seeded markers are device-local: syncing or removing
+      // them re-triggers the ERP's first-run store reset on other devices.
+      && !/password|secret|credential|session|token|pin|auth_users|initialized|seeded/i.test(key);
   }
 
   function announce(status, label) {

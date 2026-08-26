@@ -147,6 +147,13 @@
     }
     localStorage.setItem('srerp_auth_users_v6', JSON.stringify(users));
     sessionStorage.setItem('srerp_auth_session_v6', 'AUTH-ROOT-ADMIN');
+    // The ERP's first-run initializers reset the store AND delete the
+    // session key when these markers are missing (which they are right
+    // after a workspace wipe). Seed them so first-run never fires against
+    // an authenticated workspace.
+    localStorage.setItem('srerp_v18_clean_store_initialized', new Date().toISOString());
+    localStorage.setItem('srerp_v20_new_store_initialized', new Date().toISOString());
+    localStorage.setItem('srerp_seeded_v1', '1');
     // If the ERP frame is already open and locked, unlock it in place.
     try {
       var frame = document.getElementById('smartRetailErpFrame');
@@ -271,6 +278,22 @@
         var wrapped = function () { signOutAndRedirect(); };
         wrapped.srSupabaseWrapped = true;
         window.mergedLogout = wrapped;
+      }
+      // Whenever the ERP frame (re)loads, re-assert its session and unlock
+      // it — covers any internal code path that clears the session key.
+      var frame = document.getElementById('smartRetailErpFrame');
+      if (frame) {
+        frame.addEventListener('load', function () {
+          window.setTimeout(function () {
+            try {
+              sessionStorage.setItem('srerp_auth_session_v6', 'AUTH-ROOT-ADMIN');
+              var erpWindow = frame.contentWindow;
+              if (erpWindow && typeof erpWindow.authResolveSession === 'function' && erpWindow.authResolveSession()) {
+                erpWindow.authUnlock();
+              }
+            } catch (_) { /* ignore */ }
+          }, 50);
+        });
       }
     });
   }
