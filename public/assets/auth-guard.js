@@ -71,9 +71,27 @@
   }
   window.smartRetailSeedInternalSession = seedInternalSession;
 
+  /* supabase-js keeps its session in localStorage under "sb-*" keys; purge
+     them explicitly so the session cannot survive a failed network call to
+     the sign-out endpoint. */
+  function purgeSupabaseStorage() {
+    try {
+      var doomed = [];
+      for (var index = 0; index < localStorage.length; index += 1) {
+        var key = localStorage.key(index);
+        if (key && key.indexOf('sb-') === 0) doomed.push(key);
+      }
+      doomed.forEach(function (key) { localStorage.removeItem(key); });
+    } catch (_) { /* ignore */ }
+  }
+
+  var signingOut = false;
   function signOutAndRedirect() {
+    if (signingOut) return;
+    signingOut = true;
     clearInternalSession();
     client.auth.signOut().catch(function () {}).then(function () {
+      purgeSupabaseStorage();
       setAuthCookie('', 0);
       window.location.replace('/login.html');
     });
@@ -104,6 +122,12 @@
   if (!/login/.test(window.location.pathname)) {
     document.addEventListener('DOMContentLoaded', hookLogout);
     window.addEventListener('load', hookLogout);
+    // Delegated capture-phase listener: works no matter when (or how often)
+    // the app re-renders or rebinds its logout button.
+    document.addEventListener('click', function (event) {
+      var target = event.target;
+      if (target && target.closest && target.closest('#logoutBtn')) signOutAndRedirect();
+    }, true);
   }
 
   client.auth.onAuthStateChange(function (event, session) {
