@@ -9,9 +9,7 @@
   if (!/^https?:$/.test(window.location.protocol)) return;
 
   var ANALYTICS_KEY = 'srerp_analytics_parent_state';
-  var WRITER_ROLES = ['ADMIN', 'POS', 'WMS'];
   var revision = 0;
-  var role = '';
   var active = false;
   var applying = false;
   var busy = false;
@@ -20,7 +18,6 @@
   var subscribers = new Set();
 
   function client() { return window.smartRetailSupabase || null; }
-  function canWrite() { return WRITER_ROLES.indexOf(role) !== -1; }
 
   function permitted(key) {
     return typeof key === 'string'
@@ -88,7 +85,8 @@
   }
 
   async function readServerState() {
-    var result = await client().from('app_state').select('version, snapshot').eq('id', 'main').maybeSingle();
+    // RLS returns only the caller's own workspace row (if it exists yet).
+    var result = await client().from('app_state').select('version, snapshot').maybeSingle();
     if (result.error) {
       var error = new Error(result.error.message || 'Supabase read failed');
       error.code = result.error.code;
@@ -98,7 +96,7 @@
   }
 
   async function flush() {
-    if (!active || applying || !canWrite()) return;
+    if (!active || applying) return;
     if (busy) { delayed = true; return; }
     busy = true;
     announce('syncing', 'Bazaga saqlanmoqda...');
@@ -138,7 +136,7 @@
   }
 
   function notify() {
-    if (!active || applying || !canWrite()) return;
+    if (!active || applying) return;
     window.clearTimeout(timeout);
     timeout = window.setTimeout(flush, 900);
   }
@@ -152,7 +150,7 @@
       callback(active ? 'online' : 'local', active ? 'Baza bilan ulangan · v' + revision : 'Bazaga ulanish tekshirilmoqda');
       return function () { subscribers.delete(callback); };
     },
-    status: function () { return { active: active, revision: revision, busy: busy, role: role }; },
+    status: function () { return { active: active, revision: revision, busy: busy }; },
     reload: async function () {
       var data = await readServerState();
       revision = Number(data.version) || 0;
@@ -207,7 +205,7 @@
         var name = row.label ? row.label : 'avto-versiya';
         var info = document.createElement('div');
         info.innerHTML = '<div style="font-weight:700">' + name.replace(/[<>&]/g, '') + ' · v' + row.version + '</div>' +
-          '<div style="color:#8ea0bd;font-size:11px">' + new Date(row.created_at).toLocaleString() + ' · ' + (row.created_by || '') + ' · ' + fmtSize(row.size_bytes) + '</div>';
+          '<div style="color:#8ea0bd;font-size:11px">' + new Date(row.created_at).toLocaleString() + ' · ' + fmtSize(row.size_bytes) + '</div>';
         var actions = document.createElement('div');
         actions.style.cssText = 'display:flex;gap:6px;flex-shrink:0';
         var restoreButton = document.createElement('button');
@@ -261,14 +259,13 @@
       var session = await window.smartRetailAuthReady;
       if (!session) return;
 
-      var profileResult = await client().from('profiles').select('role, active, username').eq('id', session.user.id).single();
+      var profileResult = await client().from('profiles').select('active, username').eq('id', session.user.id).single();
       var profile = profileResult.data;
       if (!profile || !profile.active) {
         announce('error', 'Hisob faol emas');
         await client().auth.signOut();
         return;
       }
-      role = profile.role;
 
       var data = await readServerState();
       revision = Number(data.version) || 0;
@@ -310,15 +307,9 @@
         }
       }, true);
       active = true;
-      if (role === 'ADMIN') {
-        try { initVersionPanel(); } catch (error) { console.warn('Version panel unavailable:', error.message); }
-      }
-      if (!canWrite()) {
-        announce('online', 'Faqat o‘qish rejimi · v' + revision);
-      } else {
-        announce('online', revision ? 'Baza bilan ulangan · v' + revision : 'Baza bilan ulangan');
-        if (!revision) notify();
-      }
+      try { initVersionPanel(); } catch (error) { console.warn('Version panel unavailable:', error.message); }
+      announce('online', revision ? 'Baza bilan ulangan · v' + revision : 'Baza bilan ulangan');
+      if (!revision) notify();
     } catch (error) {
       console.warn('Supabase synchronization unavailable:', error.message);
       announce('error', 'Bazaga ulanib bo‘lmadi');

@@ -53,7 +53,7 @@
         client.auth.signInWithPassword({ email: email, password: password }).then(function (result) {
           if (result.error) throw new Error('Login yoki parol noto‘g‘ri.');
           var session = result.data.session;
-          return client.from('profiles').select('role, active, username').eq('id', session.user.id).single()
+          return client.from('profiles').select('active, username').eq('id', session.user.id).single()
             .then(function (profileResult) {
               var profile = profileResult.data;
               if (!profile || !profile.active) {

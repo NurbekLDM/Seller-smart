@@ -1,25 +1,72 @@
--- Smart Retail ERP · Supabase schema (Phase 1)
--- Run this once in the Supabase dashboard: SQL Editor -> New query -> paste -> Run.
+-- Smart Retail ERP · Supabase schema v2 — fully isolated per-user workspaces
+-- Run in the Supabase dashboard: SQL Editor -> New query -> paste -> Run.
+-- Safe to re-run. If the v1 shared-workspace schema is present, it is
+-- migrated automatically: the shared snapshot moves into the workspace of
+-- the first ADMIN user; the old shared version history is discarded.
 --
--- Design: the app keeps its offline-first localStorage model; every device
--- pushes/pulls one shared versioned snapshot ("app_state"). Users live in
--- Supabase Auth; each user gets a row in "profiles" with a role. Access is
--- enforced by Row Level Security, so permissions hold even if the client
--- code is bypassed.
+-- Model: every authenticated user owns exactly one private workspace —
+-- their own versioned snapshot and version history. There are no roles and
+-- no sharing: Row Level Security scopes every row to auth.uid(), so no one
+-- (including other admins) can read or write another user's data.
 
--- ============================================================ profiles ====
+-- ------------------------------------------- 1. remove the v1 schema ------
+
+drop policy if exists profiles_select_own on public.profiles;
+drop policy if exists profiles_admin_update on public.profiles;
+drop policy if exists app_state_select_active on public.app_state;
+
+drop function if exists public.save_app_state(bigint, jsonb);
+drop function if exists public.list_app_state_versions();
+drop function if exists public.create_app_state_version(text);
+drop function if exists public.restore_app_state_version(bigint);
+drop function if exists public.delete_app_state_version(bigint);
+drop function if exists public.active_user_role();
+
+do $$
+declare
+  old_snapshot jsonb;
+  old_version bigint;
+  target uuid;
+begin
+  -- v1 app_state had a text "id" column with one shared row 'main'.
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'app_state' and column_name = 'id') then
+    execute 'select snapshot, version from public.app_state where id = ''main''' into old_snapshot, old_version;
+    if exists (select 1 from information_schema.columns
+               where table_schema = 'public' and table_name = 'profiles' and column_name = 'role') then
+      execute 'select id from public.profiles where role = ''ADMIN'' order by created_at limit 1' into target;
+    end if;
+    drop table public.app_state cascade;
+    create table public.app_state (
+      user_id uuid primary key references auth.users (id) on delete cascade,
+      version bigint not null default 0,
+      snapshot jsonb not null default '{}'::jsonb,
+      updated_at timestamptz not null default now()
+    );
+    if target is not null and old_snapshot is not null then
+      insert into public.app_state (user_id, version, snapshot)
+      values (target, coalesce(old_version, 0), old_snapshot);
+    end if;
+  end if;
+  -- v1 history was keyed by the shared state id; it cannot be mapped to
+  -- individual users, so it is dropped.
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'app_state_history' and column_name = 'state_id') then
+    drop table public.app_state_history cascade;
+  end if;
+end $$;
+
+alter table if exists public.profiles drop column if exists role;
+
+-- ---------------------------------------------------------- profiles ------
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   username text not null default '',
-  role text not null default 'VIEWER' check (role in ('ADMIN', 'POS', 'WMS', 'VIEWER')),
   active boolean not null default true,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  created_at timestamptz not null default now()
 );
 
--- Every new auth user automatically gets a profile (default role VIEWER;
--- the owner promotes users explicitly).
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
@@ -42,16 +89,15 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
--- Role lookup that bypasses RLS (avoids recursive policy lookups).
--- Returns null for missing or deactivated users.
-create or replace function public.active_user_role()
-returns text
+-- True while the caller's account exists and is not deactivated.
+create or replace function public.is_active_user()
+returns boolean
 language sql
 security definer
 stable
 set search_path = public
 as $$
-  select role from public.profiles where id = auth.uid() and active;
+  select coalesce((select active from public.profiles where id = auth.uid()), false);
 $$;
 
 alter table public.profiles enable row level security;
@@ -59,56 +105,45 @@ alter table public.profiles enable row level security;
 drop policy if exists profiles_select_own on public.profiles;
 create policy profiles_select_own on public.profiles
   for select to authenticated
-  using (id = auth.uid() or public.active_user_role() = 'ADMIN');
+  using (id = auth.uid());
 
-drop policy if exists profiles_admin_update on public.profiles;
-create policy profiles_admin_update on public.profiles
-  for update to authenticated
-  using (public.active_user_role() = 'ADMIN')
-  with check (public.active_user_role() = 'ADMIN');
-
--- =========================================================== app_state ====
+-- --------------------------------------------------------- app_state ------
 
 create table if not exists public.app_state (
-  id text primary key,
+  user_id uuid primary key references auth.users (id) on delete cascade,
   version bigint not null default 0,
   snapshot jsonb not null default '{}'::jsonb,
-  updated_at timestamptz not null default now(),
-  updated_by text not null default ''
+  updated_at timestamptz not null default now()
 );
-
-insert into public.app_state (id) values ('main') on conflict (id) do nothing;
 
 alter table public.app_state enable row level security;
 
--- Any active user may read the shared state. Writing goes only through the
--- save_app_state() function below (no direct insert/update/delete policies).
-drop policy if exists app_state_select_active on public.app_state;
-create policy app_state_select_active on public.app_state
+-- Users read only their own workspace; writes go through save_app_state().
+drop policy if exists app_state_select_own on public.app_state;
+create policy app_state_select_own on public.app_state
   for select to authenticated
-  using (public.active_user_role() is not null);
+  using (user_id = auth.uid() and public.is_active_user());
 
--- Optimistic-concurrency save: fails with 'version_conflict' when another
--- device saved first, so data is never silently overwritten.
--- ====================================================== version history ===
+-- --------------------------------------------------- version history ------
 
 create table if not exists public.app_state_history (
   id bigint generated always as identity primary key,
-  state_id text not null default 'main',
+  user_id uuid not null references auth.users (id) on delete cascade,
   version bigint not null,
   snapshot jsonb not null,
   label text not null default '',  -- '' = automatic hourly snapshot
-  created_at timestamptz not null default now(),
-  created_by text not null default ''
+  created_at timestamptz not null default now()
 );
-create index if not exists app_state_history_time_idx
-  on public.app_state_history (state_id, label, created_at desc);
+create index if not exists app_state_history_user_idx
+  on public.app_state_history (user_id, label, created_at desc);
 
 alter table public.app_state_history enable row level security;
--- No direct policies: all access goes through the admin functions below.
+-- No direct policies: all access goes through the functions below.
 
--- ================================================= snapshot save + RPCs ===
+-- ------------------------------------------- snapshot save + version RPCs -
 
+-- Optimistic-concurrency save into the caller's own workspace. Keeps at
+-- most one automatic history snapshot per hour, pruned to the newest 72.
 create or replace function public.save_app_state(expected_version bigint, new_snapshot jsonb)
 returns bigint
 language plpgsql
@@ -116,43 +151,37 @@ security definer
 set search_path = public
 as $$
 declare
-  caller_role text;
-  caller_name text;
+  uid uuid := auth.uid();
   new_version bigint;
 begin
-  select role, username into caller_role, caller_name
-  from public.profiles where id = auth.uid() and active;
-
-  if caller_role is null or caller_role not in ('ADMIN', 'POS', 'WMS') then
+  if uid is null or not public.is_active_user() then
     raise exception 'forbidden' using errcode = '42501';
   end if;
+
+  insert into public.app_state (user_id) values (uid) on conflict (user_id) do nothing;
 
   update public.app_state
   set version = version + 1,
       snapshot = new_snapshot,
-      updated_at = now(),
-      updated_by = coalesce(nullif(caller_name, ''), auth.uid()::text)
-  where id = 'main' and version = expected_version
+      updated_at = now()
+  where user_id = uid and version = expected_version
   returning version into new_version;
 
   if new_version is null then
     raise exception 'version_conflict' using errcode = 'P0001';
   end if;
 
-  -- Automatic history: keep at most one snapshot per hour, pruned to the
-  -- newest 72 automatic entries (~a working week). Named manual backups
-  -- (label <> '') are never pruned.
   if not exists (
     select 1 from public.app_state_history
-    where state_id = 'main' and label = '' and created_at > now() - interval '1 hour'
+    where user_id = uid and label = '' and created_at > now() - interval '1 hour'
   ) then
-    insert into public.app_state_history (state_id, version, snapshot, label, created_by)
-    values ('main', new_version, new_snapshot, '', coalesce(nullif(caller_name, ''), auth.uid()::text));
+    insert into public.app_state_history (user_id, version, snapshot, label)
+    values (uid, new_version, new_snapshot, '');
     delete from public.app_state_history
-    where state_id = 'main' and label = ''
+    where user_id = uid and label = ''
       and id not in (
         select id from public.app_state_history
-        where state_id = 'main' and label = ''
+        where user_id = uid and label = ''
         order by created_at desc limit 72
       );
   end if;
@@ -161,27 +190,27 @@ begin
 end;
 $$;
 
--- List stored versions (metadata only, never the multi-MB snapshots).
+-- List the caller's stored versions (metadata only, never the snapshots).
 create or replace function public.list_app_state_versions()
-returns table (id bigint, version bigint, label text, created_at timestamptz, created_by text, size_bytes bigint)
+returns table (id bigint, version bigint, label text, created_at timestamptz, size_bytes bigint)
 language plpgsql
 security definer
 set search_path = public
 as $$
 begin
-  if public.active_user_role() is distinct from 'ADMIN' then
+  if not public.is_active_user() then
     raise exception 'forbidden' using errcode = '42501';
   end if;
   return query
-    select h.id, h.version, h.label, h.created_at, h.created_by, pg_column_size(h.snapshot)::bigint
+    select h.id, h.version, h.label, h.created_at, pg_column_size(h.snapshot)::bigint
     from public.app_state_history h
-    where h.state_id = 'main'
+    where h.user_id = auth.uid()
     order by h.created_at desc
     limit 200;
 end;
 $$;
 
--- Save the current state as a named backup that is never auto-pruned.
+-- Save the caller's current state as a named backup (never auto-pruned).
 create or replace function public.create_app_state_version(version_label text)
 returns bigint
 language plpgsql
@@ -189,25 +218,24 @@ security definer
 set search_path = public
 as $$
 declare
-  caller_name text;
   new_id bigint;
 begin
-  if public.active_user_role() is distinct from 'ADMIN' then
+  if not public.is_active_user() then
     raise exception 'forbidden' using errcode = '42501';
   end if;
-  select username into caller_name from public.profiles where id = auth.uid();
-  insert into public.app_state_history (state_id, version, snapshot, label, created_by)
-  select 'main', s.version, s.snapshot,
-         coalesce(nullif(trim(version_label), ''), 'backup'),
-         coalesce(nullif(caller_name, ''), auth.uid()::text)
-  from public.app_state s where s.id = 'main'
+  insert into public.app_state_history (user_id, version, snapshot, label)
+  select s.user_id, s.version, s.snapshot, coalesce(nullif(trim(version_label), ''), 'backup')
+  from public.app_state s where s.user_id = auth.uid()
   returning id into new_id;
+  if new_id is null then
+    raise exception 'not_found' using errcode = 'P0002';
+  end if;
   return new_id;
 end;
 $$;
 
--- Restore a stored version. The pre-restore state is kept as a named
--- backup first, so a restore is always reversible.
+-- Restore one of the caller's versions. The pre-restore state is kept as a
+-- named backup first, so a restore is always reversible.
 create or replace function public.restore_app_state_version(history_id bigint)
 returns bigint
 language plpgsql
@@ -215,34 +243,31 @@ security definer
 set search_path = public
 as $$
 declare
-  caller_name text;
+  uid uuid := auth.uid();
   target record;
   new_version bigint;
 begin
-  if public.active_user_role() is distinct from 'ADMIN' then
+  if uid is null or not public.is_active_user() then
     raise exception 'forbidden' using errcode = '42501';
   end if;
-  select username into caller_name from public.profiles where id = auth.uid();
-  select * into target from public.app_state_history where id = history_id and state_id = 'main';
+  select * into target from public.app_state_history where id = history_id and user_id = uid;
   if not found then
     raise exception 'not_found' using errcode = 'P0002';
   end if;
-  insert into public.app_state_history (state_id, version, snapshot, label, created_by)
-  select 'main', s.version, s.snapshot, 'tiklashdan oldingi holat',
-         coalesce(nullif(caller_name, ''), auth.uid()::text)
-  from public.app_state s where s.id = 'main';
+  insert into public.app_state_history (user_id, version, snapshot, label)
+  select s.user_id, s.version, s.snapshot, 'tiklashdan oldingi holat'
+  from public.app_state s where s.user_id = uid;
   update public.app_state
   set snapshot = target.snapshot,
       version = version + 1,
-      updated_at = now(),
-      updated_by = coalesce(nullif(caller_name, ''), auth.uid()::text)
-  where id = 'main'
+      updated_at = now()
+  where user_id = uid
   returning version into new_version;
   return new_version;
 end;
 $$;
 
--- Delete a stored version (e.g. an old manual backup).
+-- Delete one of the caller's stored versions.
 create or replace function public.delete_app_state_version(history_id bigint)
 returns void
 language plpgsql
@@ -250,13 +275,15 @@ security definer
 set search_path = public
 as $$
 begin
-  if public.active_user_role() is distinct from 'ADMIN' then
+  if not public.is_active_user() then
     raise exception 'forbidden' using errcode = '42501';
   end if;
-  delete from public.app_state_history where id = history_id and state_id = 'main';
+  delete from public.app_state_history where id = history_id and user_id = auth.uid();
 end;
 $$;
 
+revoke all on function public.is_active_user() from public, anon;
+grant execute on function public.is_active_user() to authenticated;
 revoke all on function public.save_app_state(bigint, jsonb) from public, anon;
 grant execute on function public.save_app_state(bigint, jsonb) to authenticated;
 revoke all on function public.list_app_state_versions() from public, anon;
@@ -268,14 +295,9 @@ grant execute on function public.restore_app_state_version(bigint) to authentica
 revoke all on function public.delete_app_state_version(bigint) from public, anon;
 grant execute on function public.delete_app_state_version(bigint) to authenticated;
 
-revoke all on function public.active_user_role() from public, anon;
-grant execute on function public.active_user_role() to authenticated;
-
--- ============================================================== notes =====
--- After creating your first user (Authentication -> Users -> Add user),
--- promote them to owner/admin by running:
---
---   update public.profiles set role = 'ADMIN' where id = 'PASTE-USER-UUID';
---
--- Roles: ADMIN (full access), POS / WMS (can save data), VIEWER (read-only).
--- Deactivate a user without deleting:  update public.profiles set active = false where id = '...';
+-- ------------------------------------------------------------ notes -------
+-- Accounts are created in the dashboard (Authentication -> Users -> Add
+-- user, "Auto Confirm User" checked). Every account is a fully private
+-- workspace with all features; there are no roles.
+-- Block an account without deleting its data:
+--   update public.profiles set active = false where id = '...';

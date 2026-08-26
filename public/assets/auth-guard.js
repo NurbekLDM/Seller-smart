@@ -47,15 +47,7 @@
      legacy in-app role. */
   /* The embedded ERP keeps its own local user list (srerp_auth_users_v6)
      and unlocks when srerp_auth_session_v6 holds the id of an active entry.
-     Map the Supabase role onto the matching ERP role so cashiers get the
-     POS view, warehouse staff the WMS view, and admins everything. */
-  var ERP_USER_BY_ROLE = {
-    ADMIN: { id: 'AUTH-ROOT-ADMIN', username: 'Admin', role: 'ADMIN', protectedUser: true },
-    WMS: { id: 'AUTH-DEFAULT-WMS', username: 'WMS', role: 'WMS', protectedUser: false },
-    POS: { id: 'AUTH-DEFAULT-POS1', username: 'Pos1', role: 'POS', protectedUser: false },
-    VIEWER: { id: 'AUTH-DEFAULT-POS1', username: 'Pos1', role: 'POS', protectedUser: false }
-  };
-
+     Every workspace owner gets full ERP access under the root admin entry. */
   function randomSecret() {
     var bytes = new Uint8Array(12);
     if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
@@ -63,27 +55,26 @@
   }
 
   function seedErpSession(profile) {
-    var entry = ERP_USER_BY_ROLE[(profile && profile.role) || ''] || ERP_USER_BY_ROLE.VIEWER;
     var users;
     try { users = JSON.parse(localStorage.getItem('srerp_auth_users_v6') || '[]'); } catch (_) { users = []; }
     if (!Array.isArray(users)) users = [];
-    var existing = users.find(function (u) { return u && u.id === entry.id; });
+    var existing = users.find(function (u) { return u && u.id === 'AUTH-ROOT-ADMIN'; });
     if (existing) {
       existing.active = true;
     } else {
       users.push({
-        id: entry.id,
-        username: entry.username,
+        id: 'AUTH-ROOT-ADMIN',
+        username: 'Admin',
         password: randomSecret(),
-        fullName: (profile && profile.username) || entry.username,
-        role: entry.role,
+        fullName: (profile && profile.username) || 'Admin',
+        role: 'ADMIN',
         active: true,
-        protected: entry.protectedUser,
+        protected: true,
         createdAt: new Date().toISOString()
       });
     }
     localStorage.setItem('srerp_auth_users_v6', JSON.stringify(users));
-    sessionStorage.setItem('srerp_auth_session_v6', entry.id);
+    sessionStorage.setItem('srerp_auth_session_v6', 'AUTH-ROOT-ADMIN');
     // If the ERP frame is already open and locked, unlock it in place.
     try {
       var frame = document.getElementById('smartRetailErpFrame');
@@ -100,11 +91,39 @@
         role: 'admin',
         username: (profile && profile.username) || 'User',
         at: new Date().toISOString(),
-        serverAuthenticated: true,
-        supabaseRole: profile ? profile.role : ''
+        serverAuthenticated: true
       }));
       seedErpSession(profile);
     } catch (_) { /* Storage can be unavailable in private windows. */ }
+  }
+
+  /* Workspaces are fully isolated per user, but this browser's localStorage
+     and IndexedDB hold whatever the previously signed-in user worked on.
+     Wipe all app data locally whenever the signed-in user changes (and on
+     logout), so one user's data can never leak into another's workspace. */
+  var ACTIVE_USER_KEY = 'sr-active-user-id';
+
+  function wipeLocalWorkspace() {
+    try {
+      var doomed = [];
+      for (var index = 0; index < localStorage.length; index += 1) {
+        var key = localStorage.key(index);
+        if (key && (key.indexOf('srerp_') === 0 || key.indexOf('uzum-analytics-') === 0)) doomed.push(key);
+      }
+      doomed.forEach(function (key) { localStorage.removeItem(key); });
+      sessionStorage.removeItem('srerp_auth_session_v6');
+    } catch (_) { /* ignore */ }
+    return new Promise(function (resolve) {
+      var settled = false;
+      var finish = function () { if (!settled) { settled = true; resolve(); } };
+      try {
+        var request = indexedDB.deleteDatabase('uzum-analytics-pro');
+        request.onsuccess = finish;
+        request.onerror = finish;
+        request.onblocked = finish;
+      } catch (_) { finish(); }
+      window.setTimeout(finish, 1500);
+    });
   }
   function clearInternalSession() {
     try {
@@ -142,6 +161,9 @@
     client.auth.signOut().catch(function () {}).then(function () {
       purgeSupabaseStorage();
       setAuthCookie('', 0);
+      try { localStorage.removeItem(ACTIVE_USER_KEY); } catch (_) { /* ignore */ }
+      return wipeLocalWorkspace();
+    }).then(function () {
       window.location.replace('/login.html');
     });
   }
@@ -203,10 +225,23 @@
     setAuthCookie(session.access_token, COOKIE_MAX_AGE);
     if (onLoginPage) return session;
 
+    // A different user signed in on this browser: wipe the previous user's
+    // local data before anything touches it, then boot fresh.
+    var previousUser = null;
+    try { previousUser = localStorage.getItem(ACTIVE_USER_KEY); } catch (_) { /* ignore */ }
+    if (previousUser && previousUser !== session.user.id) {
+      return wipeLocalWorkspace().then(function () {
+        try { localStorage.setItem(ACTIVE_USER_KEY, session.user.id); } catch (_) { /* ignore */ }
+        window.location.reload();
+        return new Promise(function () {}); // page is reloading
+      });
+    }
+    try { localStorage.setItem(ACTIVE_USER_KEY, session.user.id); } catch (_) { /* ignore */ }
+
     // App page: make sure the legacy in-app login is bypassed. The app
     // checks its session key synchronously at startup, so if it was missing
     // we seed it and reload once (flag prevents loops).
-    return client.from('profiles').select('role, active, username').eq('id', session.user.id).single()
+    return client.from('profiles').select('active, username').eq('id', session.user.id).single()
       .then(function (profileResult) {
         var profile = profileResult.data;
         if (!profile || !profile.active) {

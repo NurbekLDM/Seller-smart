@@ -31,16 +31,15 @@ Production architecture:
    **disable "Allow new users to sign up"** — only the owner creates accounts.
 4. **Authentication → Users → Add user**: create the owner's account
    (email + password, check "Auto Confirm User").
-5. Promote the owner to admin — SQL Editor:
-   ```sql
-   update public.profiles set role = 'ADMIN'
-   where id = (select id from auth.users where email = 'OWNER-EMAIL-HERE');
-   ```
-6. Copy from **Project Settings → API**: the **Project URL** and the
+5. Copy from **Project Settings → API**: the **Project URL** and the
    **anon / publishable key**.
 
-Roles: `ADMIN` (everything), `POS` / `WMS` (can save data), `VIEWER` (read-only).
-Deactivate a user without deleting: `update public.profiles set active = false where id = '...';`
+Data model: **every user is a fully isolated private workspace** (ERP +
+analytics, all features). No roles, no sharing — nobody, including other
+users, can read or write someone else's data (enforced by Row Level
+Security). Each workspace has its own automatic version history.
+Deactivate a user without deleting their data:
+`update public.profiles set active = false where id = '...';`
 
 ## Step 2 — configure the frontend
 
