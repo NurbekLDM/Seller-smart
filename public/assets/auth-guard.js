@@ -55,9 +55,9 @@
 
   /* ------------------------------ storage helpers ------------------------ */
 
-  // Reads the signed-in user's id straight from supabase-js's stored
-  // session — synchronous, works before any network call.
-  function storedSessionUserId() {
+  // Reads the signed-in user's id and email straight from supabase-js's
+  // stored session — synchronous, works before any network call.
+  function storedSessionInfo() {
     try {
       for (var index = 0; index < localStorage.length; index += 1) {
         var key = localStorage.key(index);
@@ -66,7 +66,7 @@
           if (!raw) continue;
           var value = JSON.parse(raw);
           var user = (value && value.user) || (value && value.currentSession && value.currentSession.user);
-          if (user && user.id) return user.id;
+          if (user && user.id) return { id: user.id, email: user.email || '' };
         }
       }
     } catch (_) { /* unreadable storage — fall back to the async path */ }
@@ -133,6 +133,7 @@
     var existing = users.find(function (u) { return u && u.id === 'AUTH-ROOT-ADMIN'; });
     if (existing) {
       existing.active = true;
+      if (username) existing.fullName = username; // keep the real name current
     } else {
       users.push({
         id: 'AUTH-ROOT-ADMIN',
@@ -154,12 +155,16 @@
     localStorage.setItem('srerp_v18_clean_store_initialized', new Date().toISOString());
     localStorage.setItem('srerp_v20_new_store_initialized', new Date().toISOString());
     localStorage.setItem('srerp_seeded_v1', '1');
-    // If the ERP frame is already open and locked, unlock it in place.
+    // If the ERP frame is already open: unlock it if locked, otherwise just
+    // refresh its header/permissions so the shown name stays current.
     try {
       var frame = document.getElementById('smartRetailErpFrame');
       var erpWindow = frame && frame.contentWindow;
       if (erpWindow && typeof erpWindow.authResolveSession === 'function' && erpWindow.authResolveSession()) {
-        erpWindow.authUnlock();
+        var locked = false;
+        try { locked = erpWindow.document.body.classList.contains('auth-locked'); } catch (_) { /* ignore */ }
+        if (locked) erpWindow.authUnlock();
+        else if (typeof erpWindow.authApplyPermissions === 'function') erpWindow.authApplyPermissions();
       }
     } catch (_) { /* frame not open yet */ }
   }
@@ -195,19 +200,19 @@
      seed the internal sessions, so the app starts in the right state on the
      FIRST load — no wipe-reloads, no seed-reloads. */
 
-  var cachedUserId = onLoginPage ? null : storedSessionUserId();
-  if (cachedUserId) {
+  var storedSession = onLoginPage ? null : storedSessionInfo();
+  if (storedSession) {
     var localOwner = null;
     try { localOwner = localStorage.getItem(ACTIVE_USER_KEY); } catch (_) { /* ignore */ }
-    if (localOwner !== cachedUserId) {
+    if (localOwner !== storedSession.id) {
       wipeLocalStorageSync();
       try { indexedDB.deleteDatabase('uzum-analytics-pro'); } catch (_) { /* ignore */ }
       try { localStorage.removeItem(USERNAME_CACHE_KEY); } catch (_) { /* ignore */ }
-      try { localStorage.setItem(ACTIVE_USER_KEY, cachedUserId); } catch (_) { /* ignore */ }
+      try { localStorage.setItem(ACTIVE_USER_KEY, storedSession.id); } catch (_) { /* ignore */ }
     }
     var cachedName = null;
     try { cachedName = localStorage.getItem(USERNAME_CACHE_KEY); } catch (_) { /* ignore */ }
-    seedInternalSession(cachedName || 'User');
+    seedInternalSession(cachedName || storedSession.email || 'User');
   }
 
   /* --------------------------- auth lifecycle ---------------------------- */
@@ -397,8 +402,9 @@
           clearInternalSession();
           return client.auth.signOut().then(function () { return session; });
         }
-        try { localStorage.setItem(USERNAME_CACHE_KEY, profile.username || ''); } catch (_) { /* ignore */ }
-        seedInternalSession(profile.username); // refresh with the real name
+        var displayName = profile.username || session.user.email || '';
+        try { localStorage.setItem(USERNAME_CACHE_KEY, displayName); } catch (_) { /* ignore */ }
+        seedInternalSession(displayName); // refresh with the real name
         return session;
       })
       .catch(function () { return session; });

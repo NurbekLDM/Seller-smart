@@ -64,7 +64,7 @@
               // The auth guard on the app page handles workspace ownership
               // and the legacy in-app session; cache the username so the
               // first paint shows the right name.
-              try { localStorage.setItem('sr-username', profile.username || ''); } catch (_) {}
+              try { localStorage.setItem('sr-username', profile.username || session.user.email || ''); } catch (_) {}
               if (window.smartRetailSetAuthCookie) {
                 window.smartRetailSetAuthCookie(session.access_token, 7 * 24 * 3600);
               }
