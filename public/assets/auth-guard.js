@@ -260,7 +260,69 @@
   }
   window.smartRetailSignOut = signOutAndRedirect;
 
+  /* ------------------------- ERP boot integration ------------------------ */
+  /* The ERP page ships with <body class="auth-locked">, so its login
+     overlay is visible from the first painted frame until authUnlock()
+     runs at DOMContentLoaded. Inject a boot style that keeps the ERP
+     invisible while locked (the session is seeded, so it unlocks moments
+     later); a 5s fallback reveals the login if unlocking ever fails. */
+
+  var erpWrappedSource = null;
+  var erpWrappedOutput = null;
+  function withBootAuthHide(html) {
+    if (typeof html !== 'string' || !html) return html;
+    if (html === erpWrappedSource) return erpWrappedOutput;
+    var block = '<style id="srBootAuthHide">body.auth-locked{visibility:hidden!important}</style>' +
+      '<script>setTimeout(function(){var s=document.getElementById("srBootAuthHide");' +
+      'if(s&&document.body&&document.body.classList.contains("auth-locked"))s.parentNode.removeChild(s);},5000);<\/script>';
+    var output = html.replace(/<head([^>]*)>/i, '<head$1>' + block);
+    if (output === html) output = block + html;
+    erpWrappedSource = html;
+    erpWrappedOutput = output;
+    return output;
+  }
+
+  var erpWindowBlobUrl = null;
+  function installErpIntegration() {
+    var originalGet = window.getSmartRetailErpHtml;
+    if (typeof originalGet === 'function' && !originalGet.srWrapped) {
+      var wrappedGet = function () { return withBootAuthHide(originalGet()); };
+      wrappedGet.srWrapped = true;
+      window.getSmartRetailErpHtml = wrappedGet;
+    }
+    /* "Open in a new window" gives the ERP a tab with an EMPTY per-tab
+       sessionStorage, so it boots locked. Replace the opener with one that
+       authenticates the new tab right away; sessionStorage then survives
+       refreshes of that tab, so it stays unlocked. */
+    var originalOpen = window.openSmartRetailERPWindow;
+    if (typeof originalOpen === 'function' && !originalOpen.srWrapped) {
+      var wrappedOpen = function () {
+        try {
+          var url = URL.createObjectURL(new Blob([window.getSmartRetailErpHtml()], { type: 'text/html;charset=utf-8' }));
+          var opened = window.open(url, '_blank');
+          if (opened) {
+            try { opened.sessionStorage.setItem('srerp_auth_session_v6', 'AUTH-ROOT-ADMIN'); } catch (_) { /* ignore */ }
+            // Keep the previous blob alive until a new window is opened, so
+            // refreshing the ERP window keeps working.
+            if (erpWindowBlobUrl) { try { URL.revokeObjectURL(erpWindowBlobUrl); } catch (_) { /* ignore */ } }
+            erpWindowBlobUrl = url;
+          } else {
+            try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+            if (typeof toast === 'function') toast('Yangi oyna ochilmadi — brauzer bloklagan bo‘lishi mumkin');
+          }
+        } catch (error) {
+          if (typeof toast === 'function') toast('ERP oynasini ochib bo‘lmadi');
+        }
+      };
+      wrappedOpen.srWrapped = true;
+      window.openSmartRetailERPWindow = wrappedOpen;
+    }
+  }
+
   if (!onLoginPage) {
+    document.addEventListener('DOMContentLoaded', installErpIntegration);
+    window.addEventListener('load', installErpIntegration);
+
     /* Intercept the app's logout button in the capture phase: the legacy
        handler (which flashes the internal login screen) never runs; the
        overlay + real sign-out take over immediately. */
