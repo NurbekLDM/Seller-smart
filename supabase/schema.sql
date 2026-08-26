@@ -24,14 +24,18 @@ drop function if exists public.active_user_role();
 
 do $$
 declare
-  old_snapshot jsonb;
+  -- The snapshot is cast to text so the value is fully materialized
+  -- (detoasted) before the old table is dropped; otherwise the variable
+  -- keeps a pointer into the dropped table's storage and the insert fails
+  -- with "could not open relation with OID".
+  old_snapshot text;
   old_version bigint;
   target uuid;
 begin
   -- v1 app_state had a text "id" column with one shared row 'main'.
   if exists (select 1 from information_schema.columns
              where table_schema = 'public' and table_name = 'app_state' and column_name = 'id') then
-    execute 'select snapshot, version from public.app_state where id = ''main''' into old_snapshot, old_version;
+    execute 'select snapshot::text, version from public.app_state where id = ''main''' into old_snapshot, old_version;
     if exists (select 1 from information_schema.columns
                where table_schema = 'public' and table_name = 'profiles' and column_name = 'role') then
       execute 'select id from public.profiles where role = ''ADMIN'' order by created_at limit 1' into target;
@@ -46,7 +50,7 @@ begin
       updated_at timestamptz not null default now()
     )';
     if target is not null and old_snapshot is not null then
-      execute 'insert into public.app_state (user_id, version, snapshot) values ($1, $2, $3)'
+      execute 'insert into public.app_state (user_id, version, snapshot) values ($1, $2, $3::jsonb)'
         using target, coalesce(old_version, 0), old_snapshot;
     end if;
   end if;
