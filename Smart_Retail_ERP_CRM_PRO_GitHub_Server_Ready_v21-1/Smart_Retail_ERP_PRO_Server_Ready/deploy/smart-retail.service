@@ -1,0 +1,22 @@
+[Unit]
+Description=Smart Retail ERP 21 production server
+After=network.target
+
+[Service]
+Type=simple
+User=smartretail
+Group=smartretail
+WorkingDirectory=/opt/smart-retail-erp
+EnvironmentFile=/opt/smart-retail-erp/.env
+ExecStart=/usr/bin/node /opt/smart-retail-erp/server/index.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/smart-retail-erp/data
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

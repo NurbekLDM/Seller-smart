@@ -1,0 +1,14 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+node_modules
+data
+coverage
+test-results
+playwright-report
+backups
+dist
+*.sqlite
+*.log

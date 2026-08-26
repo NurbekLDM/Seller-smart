@@ -1,0 +1,12 @@
+{
+  "name": "smart-retail-erp-vercel",
+  "version": "22.0.0",
+  "private": true,
+  "description": "Smart Retail ERP + Uzum Analytics CRM PRO — Vercel static frontend with Supabase auth and shared database",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node --check scripts/build.mjs && node --check middleware.js && node --check public/assets/auth-guard.js && node --check public/assets/supabase-sync.js && node --check public/assets/app-config.js"
+  },
+  "license": "UNLICENSED"
+}
