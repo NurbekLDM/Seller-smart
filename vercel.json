@@ -19,7 +19,7 @@
     {
       "source": "/(index.html|login.html|)",
       "headers": [
-        { "key": "Cache-Control", "value": "no-store, private" }
+        { "key": "Cache-Control", "value": "private, no-cache" }
       ]
     },
     {

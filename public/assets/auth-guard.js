@@ -1,7 +1,16 @@
-/* Client-side auth guard. Creates the shared Supabase client, redirects
-   unauthenticated visitors to the login page and keeps the middleware
-   cookie in sync with the Supabase session. Server-side gating is done by
-   middleware.js; this guard is the in-page counterpart and session owner. */
+/* Client-side auth guard. Creates the shared Supabase client, keeps the
+   middleware cookie in sync with the Supabase session, redirects
+   unauthenticated visitors to the login page, and boots the app for the
+   signed-in user WITHOUT extra page reloads:
+
+   - The stored Supabase session is read synchronously (before the app's
+     own scripts parse), so workspace-ownership checks and the legacy
+     in-app session seeding happen up front instead of via reloads.
+   - Workspaces are fully isolated per user. Local data (localStorage +
+     the analytics IndexedDB) is wiped whenever it does not verifiably
+     belong to the signed-in user, and on logout.
+   - Logout shows an overlay, gives a pending sync flush up to 2.5s, then
+     clears everything locally and leaves — no waiting on slow networks. */
 (function smartRetailAuthGuard() {
   'use strict';
 
@@ -25,6 +34,13 @@
   var client = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey);
   window.smartRetailSupabase = client;
 
+  var COOKIE_MAX_AGE = 7 * 24 * 3600;
+  var MERGED_SESSION_KEY = 'uzum-analytics-merged-session-v3';
+  var ACTIVE_USER_KEY = 'sr-active-user-id';
+  var USERNAME_CACHE_KEY = 'sr-username';
+  var onLoginPage = /login/.test(window.location.pathname);
+  var signingOut = false;
+
   function setAuthCookie(token, maxAgeSeconds) {
     var parts = [
       'sr-access-token=' + encodeURIComponent(token || ''),
@@ -37,24 +53,80 @@
   }
   window.smartRetailSetAuthCookie = setAuthCookie;
 
-  var COOKIE_MAX_AGE = 7 * 24 * 3600;
-  var MERGED_SESSION_KEY = 'uzum-analytics-merged-session-v3';
+  /* ------------------------------ storage helpers ------------------------ */
 
-  /* The app ships with its own legacy in-app login ("Vision Pro AI").
-     Supabase is the only real authentication now, so every authenticated
-     user gets the internal session seeded and never sees that screen.
-     Actual permissions are enforced by the database (RLS), not by the
-     legacy in-app role. */
-  /* The embedded ERP keeps its own local user list (srerp_auth_users_v6)
-     and unlocks when srerp_auth_session_v6 holds the id of an active entry.
-     Every workspace owner gets full ERP access under the root admin entry. */
+  // Reads the signed-in user's id straight from supabase-js's stored
+  // session — synchronous, works before any network call.
+  function storedSessionUserId() {
+    try {
+      for (var index = 0; index < localStorage.length; index += 1) {
+        var key = localStorage.key(index);
+        if (key && key.indexOf('sb-') === 0 && key.slice(-11) === '-auth-token') {
+          var raw = localStorage.getItem(key);
+          if (!raw) continue;
+          var value = JSON.parse(raw);
+          var user = (value && value.user) || (value && value.currentSession && value.currentSession.user);
+          if (user && user.id) return user.id;
+        }
+      }
+    } catch (_) { /* unreadable storage — fall back to the async path */ }
+    return null;
+  }
+
+  /* supabase-js keeps its session in localStorage under "sb-*" keys; purge
+     them explicitly so a session cannot survive logout. */
+  function purgeSupabaseStorage() {
+    try {
+      var doomed = [];
+      for (var index = 0; index < localStorage.length; index += 1) {
+        var key = localStorage.key(index);
+        if (key && key.indexOf('sb-') === 0) doomed.push(key);
+      }
+      doomed.forEach(function (key) { localStorage.removeItem(key); });
+    } catch (_) { /* ignore */ }
+  }
+
+  // Removes all app data (ERP + analytics) from this browser. Synchronous
+  // for localStorage; the IndexedDB delete is queued before the app's own
+  // open request, so the app always boots against a clean database.
+  function wipeLocalStorageSync() {
+    try {
+      var doomed = [];
+      for (var index = 0; index < localStorage.length; index += 1) {
+        var key = localStorage.key(index);
+        if (key && (key.indexOf('srerp_') === 0 || key.indexOf('uzum-analytics-') === 0)) doomed.push(key);
+      }
+      doomed.forEach(function (key) { localStorage.removeItem(key); });
+      sessionStorage.removeItem('srerp_auth_session_v6');
+    } catch (_) { /* ignore */ }
+  }
+
+  function deleteAnalyticsDatabase() {
+    return new Promise(function (resolve) {
+      var settled = false;
+      var finish = function () { if (!settled) { settled = true; resolve(); } };
+      try {
+        var request = indexedDB.deleteDatabase('uzum-analytics-pro');
+        request.onsuccess = finish;
+        request.onerror = finish;
+        request.onblocked = finish;
+      } catch (_) { finish(); }
+      window.setTimeout(finish, 1500);
+    });
+  }
+
+  /* --------------------- legacy in-app session seeding -------------------- */
+
   function randomSecret() {
     var bytes = new Uint8Array(12);
     if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
     return Array.prototype.map.call(bytes, function (b) { return b.toString(16); }).join('');
   }
 
-  function seedErpSession(profile) {
+  /* The embedded ERP keeps its own local user list (srerp_auth_users_v6)
+     and unlocks when srerp_auth_session_v6 holds the id of an active entry.
+     Every workspace owner gets full ERP access under the root admin entry. */
+  function seedErpSession(username) {
     var users;
     try { users = JSON.parse(localStorage.getItem('srerp_auth_users_v6') || '[]'); } catch (_) { users = []; }
     if (!Array.isArray(users)) users = [];
@@ -66,7 +138,7 @@
         id: 'AUTH-ROOT-ADMIN',
         username: 'Admin',
         password: randomSecret(),
-        fullName: (profile && profile.username) || 'Admin',
+        fullName: username || 'Admin',
         role: 'ADMIN',
         active: true,
         protected: true,
@@ -85,138 +157,133 @@
     } catch (_) { /* frame not open yet */ }
   }
 
-  function seedInternalSession(profile) {
+  /* The app ships with its own legacy logins ("Vision Pro AI" + the ERP's
+     internal one). Supabase is the only real authentication, so every
+     authenticated user gets both internal sessions seeded and never sees
+     those screens. */
+  function seedInternalSession(username) {
     try {
       localStorage.setItem(MERGED_SESSION_KEY, JSON.stringify({
         role: 'admin',
-        username: (profile && profile.username) || 'User',
+        username: username || 'User',
         at: new Date().toISOString(),
         serverAuthenticated: true
       }));
-      seedErpSession(profile);
+      seedErpSession(username);
     } catch (_) { /* Storage can be unavailable in private windows. */ }
   }
+  window.smartRetailSeedInternalSession = function (profile) {
+    seedInternalSession(profile && profile.username);
+  };
 
-  /* Workspaces are fully isolated per user, but this browser's localStorage
-     and IndexedDB hold whatever the previously signed-in user worked on.
-     Wipe all app data locally whenever the signed-in user changes (and on
-     logout), so one user's data can never leak into another's workspace. */
-  var ACTIVE_USER_KEY = 'sr-active-user-id';
-
-  function wipeLocalWorkspace() {
-    try {
-      var doomed = [];
-      for (var index = 0; index < localStorage.length; index += 1) {
-        var key = localStorage.key(index);
-        if (key && (key.indexOf('srerp_') === 0 || key.indexOf('uzum-analytics-') === 0)) doomed.push(key);
-      }
-      doomed.forEach(function (key) { localStorage.removeItem(key); });
-      sessionStorage.removeItem('srerp_auth_session_v6');
-    } catch (_) { /* ignore */ }
-    return new Promise(function (resolve) {
-      var settled = false;
-      var finish = function () { if (!settled) { settled = true; resolve(); } };
-      try {
-        var request = indexedDB.deleteDatabase('uzum-analytics-pro');
-        request.onsuccess = finish;
-        request.onerror = finish;
-        request.onblocked = finish;
-      } catch (_) { finish(); }
-      window.setTimeout(finish, 1500);
-    });
-  }
   function clearInternalSession() {
     try {
       localStorage.removeItem(MERGED_SESSION_KEY);
       sessionStorage.removeItem('srerp_auth_session_v6');
     } catch (_) { /* ignore */ }
   }
-  function hasValidInternalSession() {
-    try {
-      var value = JSON.parse(localStorage.getItem(MERGED_SESSION_KEY) || 'null');
-      return !!(value && value.role);
-    } catch (_) { return false; }
-  }
-  window.smartRetailSeedInternalSession = seedInternalSession;
 
-  /* supabase-js keeps its session in localStorage under "sb-*" keys; purge
-     them explicitly so the session cannot survive a failed network call to
-     the sign-out endpoint. */
-  function purgeSupabaseStorage() {
+  /* ------------------------- synchronous boot ---------------------------- */
+  /* Runs before the app's scripts parse: enforce workspace ownership and
+     seed the internal sessions, so the app starts in the right state on the
+     FIRST load — no wipe-reloads, no seed-reloads. */
+
+  var cachedUserId = onLoginPage ? null : storedSessionUserId();
+  if (cachedUserId) {
+    var localOwner = null;
+    try { localOwner = localStorage.getItem(ACTIVE_USER_KEY); } catch (_) { /* ignore */ }
+    if (localOwner !== cachedUserId) {
+      wipeLocalStorageSync();
+      try { indexedDB.deleteDatabase('uzum-analytics-pro'); } catch (_) { /* ignore */ }
+      try { localStorage.removeItem(USERNAME_CACHE_KEY); } catch (_) { /* ignore */ }
+      try { localStorage.setItem(ACTIVE_USER_KEY, cachedUserId); } catch (_) { /* ignore */ }
+    }
+    var cachedName = null;
+    try { cachedName = localStorage.getItem(USERNAME_CACHE_KEY); } catch (_) { /* ignore */ }
+    seedInternalSession(cachedName || 'User');
+  }
+
+  /* --------------------------- auth lifecycle ---------------------------- */
+
+  client.auth.onAuthStateChange(function (event, session) {
+    if (session && session.access_token) setAuthCookie(session.access_token, COOKIE_MAX_AGE);
+    if (event === 'SIGNED_OUT' && !signingOut) {
+      setAuthCookie('', 0);
+      clearInternalSession();
+      if (!onLoginPage) window.location.replace('/login.html');
+    }
+  });
+
+  function showLogoutOverlay() {
     try {
-      var doomed = [];
-      for (var index = 0; index < localStorage.length; index += 1) {
-        var key = localStorage.key(index);
-        if (key && key.indexOf('sb-') === 0) doomed.push(key);
-      }
-      doomed.forEach(function (key) { localStorage.removeItem(key); });
+      if (document.getElementById('srLogoutOverlay')) return;
+      var overlay = document.createElement('div');
+      overlay.id = 'srLogoutOverlay';
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;background:#091120;color:#dbe6f7;font:600 15px -apple-system,"Segoe UI",sans-serif';
+      overlay.textContent = 'Chiqilmoqda...';
+      (document.body || document.documentElement).appendChild(overlay);
     } catch (_) { /* ignore */ }
   }
 
-  var signingOut = false;
   function signOutAndRedirect() {
     if (signingOut) return;
     signingOut = true;
-    clearInternalSession();
-    client.auth.signOut().catch(function () {}).then(function () {
+    showLogoutOverlay();
+    // Give an unsent sync flush a short window so the last change is not
+    // lost, but never block logout on a slow network.
+    var pendingFlush = Promise.resolve();
+    try {
+      var sync = window.smartRetailAnalyticsServerSync;
+      if (sync && sync.status && sync.status().active) {
+        pendingFlush = Promise.resolve(sync.flush()).catch(function () {});
+      }
+    } catch (_) { /* ignore */ }
+    var cap = new Promise(function (resolve) { window.setTimeout(resolve, 2500); });
+    Promise.race([pendingFlush, cap]).then(function () {
+      try { client.auth.signOut(); } catch (_) { /* fire-and-forget revocation */ }
+      clearInternalSession();
+      wipeLocalStorageSync();
+      try { indexedDB.deleteDatabase('uzum-analytics-pro'); } catch (_) { /* ignore */ }
+      try { localStorage.removeItem(ACTIVE_USER_KEY); } catch (_) { /* ignore */ }
+      try { localStorage.removeItem(USERNAME_CACHE_KEY); } catch (_) { /* ignore */ }
       purgeSupabaseStorage();
       setAuthCookie('', 0);
-      try { localStorage.removeItem(ACTIVE_USER_KEY); } catch (_) { /* ignore */ }
-      return wipeLocalWorkspace();
-    }).then(function () {
       window.location.replace('/login.html');
     });
   }
   window.smartRetailSignOut = signOutAndRedirect;
 
-  /* The app's own logout button ("logoutBtn" -> mergedLogout) only clears
-     the legacy in-app session, so the Supabase session would survive and
-     the guard would sign the user right back in. Attach the real sign-out
-     to the same button, and wrap the global as a fallback for any other
-     caller. */
-  function hookLogout() {
-    var button = document.getElementById('logoutBtn');
-    if (button && !button.dataset.srSupabaseLogout) {
-      button.dataset.srSupabaseLogout = '1';
-      button.addEventListener('click', signOutAndRedirect);
-    }
-    var original = window.mergedLogout;
-    if (typeof original === 'function' && !original.srSupabaseWrapped) {
-      var wrapped = function () {
-        try { original.apply(this, arguments); } catch (_) { /* ignore */ }
-        signOutAndRedirect();
-      };
-      wrapped.srSupabaseWrapped = true;
-      window.mergedLogout = wrapped;
-    }
-  }
-  if (!/login/.test(window.location.pathname)) {
-    document.addEventListener('DOMContentLoaded', hookLogout);
-    window.addEventListener('load', hookLogout);
-    // Delegated capture-phase listener: works no matter when (or how often)
-    // the app re-renders or rebinds its logout button.
+  if (!onLoginPage) {
+    /* Intercept the app's logout button in the capture phase: the legacy
+       handler (which flashes the internal login screen) never runs; the
+       overlay + real sign-out take over immediately. */
     document.addEventListener('click', function (event) {
       var target = event.target;
-      if (target && target.closest && target.closest('#logoutBtn')) signOutAndRedirect();
+      if (target && target.closest && target.closest('#logoutBtn')) {
+        event.preventDefault();
+        event.stopPropagation();
+        signOutAndRedirect();
+      }
     }, true);
+    window.addEventListener('load', function () {
+      var original = window.mergedLogout;
+      if (typeof original === 'function' && !original.srSupabaseWrapped) {
+        var wrapped = function () { signOutAndRedirect(); };
+        wrapped.srSupabaseWrapped = true;
+        window.mergedLogout = wrapped;
+      }
+    });
   }
 
-  client.auth.onAuthStateChange(function (event, session) {
-    if (session && session.access_token) setAuthCookie(session.access_token, COOKIE_MAX_AGE);
-    if (event === 'SIGNED_OUT') {
-      setAuthCookie('', 0);
-      clearInternalSession();
-      if (!/login/.test(window.location.pathname)) window.location.replace('/login.html');
-    }
-  });
+  /* --------------------------- session readiness ------------------------- */
 
   // Resolves with the session, or redirects to login. supabase-sync.js and
   // the login page both wait on this promise.
   window.smartRetailAuthReady = client.auth.getSession().then(function (result) {
     var session = result && result.data ? result.data.session : null;
-    var onLoginPage = /login/.test(window.location.pathname);
     if (!session) {
       if (!onLoginPage) {
+        clearInternalSession();
         window.location.replace('/login.html');
         return new Promise(function () {}); // page is navigating away
       }
@@ -225,23 +292,19 @@
     setAuthCookie(session.access_token, COOKIE_MAX_AGE);
     if (onLoginPage) return session;
 
-    // Wipe local data unless it verifiably belongs to the signed-in user:
-    // a different recorded user OR no recorded user at all (data of unknown
-    // origin) both trigger the wipe. The user's real data lives in the
-    // database and is restored by the sync right after the clean reload.
-    var previousUser = null;
-    try { previousUser = localStorage.getItem(ACTIVE_USER_KEY); } catch (_) { /* ignore */ }
-    if (previousUser !== session.user.id) {
-      return wipeLocalWorkspace().then(function () {
+    // Fallback for the rare case the synchronous check could not read the
+    // stored session: enforce workspace ownership with one clean reload.
+    var owner = null;
+    try { owner = localStorage.getItem(ACTIVE_USER_KEY); } catch (_) { /* ignore */ }
+    if (owner !== session.user.id) {
+      wipeLocalStorageSync();
+      return deleteAnalyticsDatabase().then(function () {
         try { localStorage.setItem(ACTIVE_USER_KEY, session.user.id); } catch (_) { /* ignore */ }
         window.location.reload();
         return new Promise(function () {}); // page is reloading
       });
     }
 
-    // App page: make sure the legacy in-app login is bypassed. The app
-    // checks its session key synchronously at startup, so if it was missing
-    // we seed it and reload once (flag prevents loops).
     return client.from('profiles').select('active, username').eq('id', session.user.id).single()
       .then(function (profileResult) {
         var profile = profileResult.data;
@@ -249,14 +312,8 @@
           clearInternalSession();
           return client.auth.signOut().then(function () { return session; });
         }
-        var alreadySeeded = hasValidInternalSession();
-        seedInternalSession(profile);
-        if (!alreadySeeded && !sessionStorage.getItem('sr-auth-reloaded')) {
-          sessionStorage.setItem('sr-auth-reloaded', '1');
-          window.location.reload();
-          return new Promise(function () {}); // page is reloading
-        }
-        sessionStorage.removeItem('sr-auth-reloaded');
+        try { localStorage.setItem(USERNAME_CACHE_KEY, profile.username || ''); } catch (_) { /* ignore */ }
+        seedInternalSession(profile.username); // refresh with the real name
         return session;
       })
       .catch(function () { return session; });
