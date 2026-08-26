@@ -90,6 +90,25 @@ create policy app_state_select_active on public.app_state
 
 -- Optimistic-concurrency save: fails with 'version_conflict' when another
 -- device saved first, so data is never silently overwritten.
+-- ====================================================== version history ===
+
+create table if not exists public.app_state_history (
+  id bigint generated always as identity primary key,
+  state_id text not null default 'main',
+  version bigint not null,
+  snapshot jsonb not null,
+  label text not null default '',  -- '' = automatic hourly snapshot
+  created_at timestamptz not null default now(),
+  created_by text not null default ''
+);
+create index if not exists app_state_history_time_idx
+  on public.app_state_history (state_id, label, created_at desc);
+
+alter table public.app_state_history enable row level security;
+-- No direct policies: all access goes through the admin functions below.
+
+-- ================================================= snapshot save + RPCs ===
+
 create or replace function public.save_app_state(expected_version bigint, new_snapshot jsonb)
 returns bigint
 language plpgsql
@@ -120,12 +139,134 @@ begin
     raise exception 'version_conflict' using errcode = 'P0001';
   end if;
 
+  -- Automatic history: keep at most one snapshot per hour, pruned to the
+  -- newest 72 automatic entries (~a working week). Named manual backups
+  -- (label <> '') are never pruned.
+  if not exists (
+    select 1 from public.app_state_history
+    where state_id = 'main' and label = '' and created_at > now() - interval '1 hour'
+  ) then
+    insert into public.app_state_history (state_id, version, snapshot, label, created_by)
+    values ('main', new_version, new_snapshot, '', coalesce(nullif(caller_name, ''), auth.uid()::text));
+    delete from public.app_state_history
+    where state_id = 'main' and label = ''
+      and id not in (
+        select id from public.app_state_history
+        where state_id = 'main' and label = ''
+        order by created_at desc limit 72
+      );
+  end if;
+
   return new_version;
+end;
+$$;
+
+-- List stored versions (metadata only, never the multi-MB snapshots).
+create or replace function public.list_app_state_versions()
+returns table (id bigint, version bigint, label text, created_at timestamptz, created_by text, size_bytes bigint)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if public.active_user_role() is distinct from 'ADMIN' then
+    raise exception 'forbidden' using errcode = '42501';
+  end if;
+  return query
+    select h.id, h.version, h.label, h.created_at, h.created_by, pg_column_size(h.snapshot)::bigint
+    from public.app_state_history h
+    where h.state_id = 'main'
+    order by h.created_at desc
+    limit 200;
+end;
+$$;
+
+-- Save the current state as a named backup that is never auto-pruned.
+create or replace function public.create_app_state_version(version_label text)
+returns bigint
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  caller_name text;
+  new_id bigint;
+begin
+  if public.active_user_role() is distinct from 'ADMIN' then
+    raise exception 'forbidden' using errcode = '42501';
+  end if;
+  select username into caller_name from public.profiles where id = auth.uid();
+  insert into public.app_state_history (state_id, version, snapshot, label, created_by)
+  select 'main', s.version, s.snapshot,
+         coalesce(nullif(trim(version_label), ''), 'backup'),
+         coalesce(nullif(caller_name, ''), auth.uid()::text)
+  from public.app_state s where s.id = 'main'
+  returning id into new_id;
+  return new_id;
+end;
+$$;
+
+-- Restore a stored version. The pre-restore state is kept as a named
+-- backup first, so a restore is always reversible.
+create or replace function public.restore_app_state_version(history_id bigint)
+returns bigint
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  caller_name text;
+  target record;
+  new_version bigint;
+begin
+  if public.active_user_role() is distinct from 'ADMIN' then
+    raise exception 'forbidden' using errcode = '42501';
+  end if;
+  select username into caller_name from public.profiles where id = auth.uid();
+  select * into target from public.app_state_history where id = history_id and state_id = 'main';
+  if not found then
+    raise exception 'not_found' using errcode = 'P0002';
+  end if;
+  insert into public.app_state_history (state_id, version, snapshot, label, created_by)
+  select 'main', s.version, s.snapshot, 'tiklashdan oldingi holat',
+         coalesce(nullif(caller_name, ''), auth.uid()::text)
+  from public.app_state s where s.id = 'main';
+  update public.app_state
+  set snapshot = target.snapshot,
+      version = version + 1,
+      updated_at = now(),
+      updated_by = coalesce(nullif(caller_name, ''), auth.uid()::text)
+  where id = 'main'
+  returning version into new_version;
+  return new_version;
+end;
+$$;
+
+-- Delete a stored version (e.g. an old manual backup).
+create or replace function public.delete_app_state_version(history_id bigint)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if public.active_user_role() is distinct from 'ADMIN' then
+    raise exception 'forbidden' using errcode = '42501';
+  end if;
+  delete from public.app_state_history where id = history_id and state_id = 'main';
 end;
 $$;
 
 revoke all on function public.save_app_state(bigint, jsonb) from public, anon;
 grant execute on function public.save_app_state(bigint, jsonb) to authenticated;
+revoke all on function public.list_app_state_versions() from public, anon;
+grant execute on function public.list_app_state_versions() to authenticated;
+revoke all on function public.create_app_state_version(text) from public, anon;
+grant execute on function public.create_app_state_version(text) to authenticated;
+revoke all on function public.restore_app_state_version(bigint) from public, anon;
+grant execute on function public.restore_app_state_version(bigint) to authenticated;
+revoke all on function public.delete_app_state_version(bigint) from public, anon;
+grant execute on function public.delete_app_state_version(bigint) to authenticated;
 
 revoke all on function public.active_user_role() from public, anon;
 grant execute on function public.active_user_role() to authenticated;

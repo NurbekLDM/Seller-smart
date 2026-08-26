@@ -163,6 +163,98 @@
     }
   };
 
+  /* Admin-only version panel: list automatic hourly snapshots and named
+     backups, create a named backup, restore any of them. */
+  function initVersionPanel() {
+    if (document.getElementById('srVersionPanelBtn')) return;
+
+    var button = document.createElement('button');
+    button.id = 'srVersionPanelBtn';
+    button.textContent = '🕘 Versiyalar';
+    button.style.cssText = 'position:fixed;left:14px;bottom:14px;z-index:99998;padding:8px 14px;border:1px solid rgba(255,255,255,.18);border-radius:10px;background:rgba(13,22,40,.92);color:#dbe6f7;font:600 12px -apple-system,"Segoe UI",sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.35)';
+
+    var panel = document.createElement('div');
+    panel.id = 'srVersionPanel';
+    panel.style.cssText = 'position:fixed;left:14px;bottom:56px;z-index:99999;display:none;width:min(430px,92vw);max-height:62vh;overflow:auto;padding:14px;border:1px solid rgba(255,255,255,.16);border-radius:14px;background:rgba(10,17,32,.97);color:#dbe6f7;font:13px -apple-system,"Segoe UI",sans-serif;box-shadow:0 18px 60px rgba(0,0,0,.5)';
+    panel.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
+      '<strong>Baza versiyalari</strong>' +
+      '<button id="srVersionClose" style="border:0;background:none;color:#8ea0bd;font-size:16px;cursor:pointer">✕</button></div>' +
+      '<div style="display:flex;gap:6px;margin-bottom:10px">' +
+      '<input id="srVersionLabel" placeholder="Backup nomi (masalan: iyul hisobot)" maxlength="60" style="flex:1;height:34px;padding:0 10px;border:1px solid rgba(255,255,255,.16);border-radius:8px;background:#101b30;color:#fff;font-size:12px">' +
+      '<button id="srVersionCreate" style="height:34px;padding:0 12px;border:0;border-radius:8px;background:linear-gradient(105deg,#6961fa,#3686ef);color:#fff;font-weight:700;font-size:12px;cursor:pointer">Saqlash</button></div>' +
+      '<div id="srVersionList" style="display:grid;gap:6px">Yuklanmoqda...</div>';
+
+    document.body.appendChild(button);
+    document.body.appendChild(panel);
+
+    function fmtSize(bytes) {
+      var mb = bytes / (1024 * 1024);
+      return mb >= 1 ? mb.toFixed(1) + ' MB' : Math.max(1, Math.round(bytes / 1024)) + ' KB';
+    }
+
+    async function refreshList() {
+      var list = document.getElementById('srVersionList');
+      list.textContent = 'Yuklanmoqda...';
+      var result = await client().rpc('list_app_state_versions');
+      if (result.error) { list.textContent = 'Xatolik: ' + result.error.message; return; }
+      var rows = result.data || [];
+      if (!rows.length) { list.textContent = 'Hali versiyalar yo‘q. Ma’lumot saqlanganda avtomatik paydo bo‘ladi.'; return; }
+      list.innerHTML = '';
+      rows.forEach(function (row) {
+        var item = document.createElement('div');
+        item.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid rgba(255,255,255,.1);border-radius:9px;background:rgba(255,255,255,.04)';
+        var name = row.label ? row.label : 'avto-versiya';
+        var info = document.createElement('div');
+        info.innerHTML = '<div style="font-weight:700">' + name.replace(/[<>&]/g, '') + ' · v' + row.version + '</div>' +
+          '<div style="color:#8ea0bd;font-size:11px">' + new Date(row.created_at).toLocaleString() + ' · ' + (row.created_by || '') + ' · ' + fmtSize(row.size_bytes) + '</div>';
+        var actions = document.createElement('div');
+        actions.style.cssText = 'display:flex;gap:6px;flex-shrink:0';
+        var restoreButton = document.createElement('button');
+        restoreButton.textContent = 'Tiklash';
+        restoreButton.style.cssText = 'padding:5px 10px;border:0;border-radius:7px;background:#2f855a;color:#fff;font-size:11px;font-weight:700;cursor:pointer';
+        restoreButton.onclick = async function () {
+          if (!window.confirm('Bazani "' + name + '" (v' + row.version + ') holatiga qaytarasizmi?\nHozirgi holat avtomatik backup sifatida saqlanadi.')) return;
+          restoreButton.disabled = true;
+          var restored = await client().rpc('restore_app_state_version', { history_id: row.id });
+          if (restored.error) { window.alert('Tiklab bo‘lmadi: ' + restored.error.message); restoreButton.disabled = false; return; }
+          try { await window.smartRetailAnalyticsServerSync.reload(); } catch (_) { /* reload below refreshes anyway */ }
+          window.location.reload();
+        };
+        actions.appendChild(restoreButton);
+        if (row.label) {
+          var deleteButton = document.createElement('button');
+          deleteButton.textContent = 'O‘chirish';
+          deleteButton.style.cssText = 'padding:5px 10px;border:0;border-radius:7px;background:#823a3a;color:#fff;font-size:11px;font-weight:700;cursor:pointer';
+          deleteButton.onclick = async function () {
+            if (!window.confirm('"' + name + '" backupini o‘chirasizmi?')) return;
+            var removed = await client().rpc('delete_app_state_version', { history_id: row.id });
+            if (removed.error) { window.alert('O‘chirib bo‘lmadi: ' + removed.error.message); return; }
+            refreshList();
+          };
+          actions.appendChild(deleteButton);
+        }
+        item.appendChild(info);
+        item.appendChild(actions);
+        list.appendChild(item);
+      });
+    }
+
+    button.onclick = function () {
+      var visible = panel.style.display !== 'none';
+      panel.style.display = visible ? 'none' : 'block';
+      if (!visible) refreshList();
+    };
+    panel.querySelector('#srVersionClose').onclick = function () { panel.style.display = 'none'; };
+    panel.querySelector('#srVersionCreate').onclick = async function () {
+      var labelInput = document.getElementById('srVersionLabel');
+      var created = await client().rpc('create_app_state_version', { version_label: labelInput.value });
+      if (created.error) { window.alert('Saqlab bo‘lmadi: ' + created.error.message); return; }
+      labelInput.value = '';
+      refreshList();
+    };
+  }
+
   async function start() {
     if (!client() || !window.smartRetailAuthReady) return;
     try {
@@ -193,6 +285,9 @@
       window.addEventListener('storage', function (event) { if (permitted(event.key)) notify(); });
       window.addEventListener('online', notify);
       active = true;
+      if (role === 'ADMIN') {
+        try { initVersionPanel(); } catch (error) { console.warn('Version panel unavailable:', error.message); }
+      }
       if (!canWrite()) {
         announce('online', 'Faqat o‘qish rejimi · v' + revision);
       } else {
