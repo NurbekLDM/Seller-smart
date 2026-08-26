@@ -284,6 +284,19 @@
       }
       window.addEventListener('storage', function (event) { if (permitted(event.key)) notify(); });
       window.addEventListener('online', notify);
+      // The app's reset buttons (clearDataBtn/hardResetBtn) clear local data
+      // without calling saveState, so the cleared state never reached the
+      // database and reappeared on reload. Push the state after the reset
+      // (and its confirm dialog) had time to finish; a cancelled confirm
+      // just re-saves the unchanged state, which is harmless.
+      document.addEventListener('click', function (event) {
+        var target = event.target;
+        if (!target || !target.closest) return;
+        if (target.closest('#clearDataBtn') || target.closest('#hardResetBtn')) {
+          window.setTimeout(notify, 1500);
+          window.setTimeout(notify, 4000);
+        }
+      }, true);
       active = true;
       if (role === 'ADMIN') {
         try { initVersionPanel(); } catch (error) { console.warn('Version panel unavailable:', error.message); }
