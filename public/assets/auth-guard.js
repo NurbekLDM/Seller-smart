@@ -38,11 +38,44 @@
   window.smartRetailSetAuthCookie = setAuthCookie;
 
   var COOKIE_MAX_AGE = 7 * 24 * 3600;
+  var MERGED_SESSION_KEY = 'uzum-analytics-merged-session-v3';
+
+  /* The app ships with its own legacy in-app login ("Vision Pro AI").
+     Supabase is the only real authentication now, so every authenticated
+     user gets the internal session seeded and never sees that screen.
+     Actual permissions are enforced by the database (RLS), not by the
+     legacy in-app role. */
+  function seedInternalSession(profile) {
+    try {
+      localStorage.setItem(MERGED_SESSION_KEY, JSON.stringify({
+        role: 'admin',
+        username: (profile && profile.username) || 'User',
+        at: new Date().toISOString(),
+        serverAuthenticated: true,
+        supabaseRole: profile ? profile.role : ''
+      }));
+      sessionStorage.setItem('srerp_auth_session_v6', 'AUTH-ROOT-ADMIN');
+    } catch (_) { /* Storage can be unavailable in private windows. */ }
+  }
+  function clearInternalSession() {
+    try {
+      localStorage.removeItem(MERGED_SESSION_KEY);
+      sessionStorage.removeItem('srerp_auth_session_v6');
+    } catch (_) { /* ignore */ }
+  }
+  function hasValidInternalSession() {
+    try {
+      var value = JSON.parse(localStorage.getItem(MERGED_SESSION_KEY) || 'null');
+      return !!(value && value.role);
+    } catch (_) { return false; }
+  }
+  window.smartRetailSeedInternalSession = seedInternalSession;
 
   client.auth.onAuthStateChange(function (event, session) {
     if (session && session.access_token) setAuthCookie(session.access_token, COOKIE_MAX_AGE);
     if (event === 'SIGNED_OUT') {
       setAuthCookie('', 0);
+      clearInternalSession();
       if (!/login/.test(window.location.pathname)) window.location.replace('/login.html');
     }
   });
@@ -51,14 +84,37 @@
   // the login page both wait on this promise.
   window.smartRetailAuthReady = client.auth.getSession().then(function (result) {
     var session = result && result.data ? result.data.session : null;
+    var onLoginPage = /login/.test(window.location.pathname);
     if (!session) {
-      if (!/login/.test(window.location.pathname)) {
+      if (!onLoginPage) {
         window.location.replace('/login.html');
         return new Promise(function () {}); // page is navigating away
       }
       return null;
     }
     setAuthCookie(session.access_token, COOKIE_MAX_AGE);
-    return session;
+    if (onLoginPage) return session;
+
+    // App page: make sure the legacy in-app login is bypassed. The app
+    // checks its session key synchronously at startup, so if it was missing
+    // we seed it and reload once (flag prevents loops).
+    return client.from('profiles').select('role, active, username').eq('id', session.user.id).single()
+      .then(function (profileResult) {
+        var profile = profileResult.data;
+        if (!profile || !profile.active) {
+          clearInternalSession();
+          return client.auth.signOut().then(function () { return session; });
+        }
+        var alreadySeeded = hasValidInternalSession();
+        seedInternalSession(profile);
+        if (!alreadySeeded && !sessionStorage.getItem('sr-auth-reloaded')) {
+          sessionStorage.setItem('sr-auth-reloaded', '1');
+          window.location.reload();
+          return new Promise(function () {}); // page is reloading
+        }
+        sessionStorage.removeItem('sr-auth-reloaded');
+        return session;
+      })
+      .catch(function () { return session; });
   });
 })();

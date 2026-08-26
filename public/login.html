@@ -43,20 +43,6 @@
         });
       }
 
-      function seedInternalSession(profile) {
-        // The ERP has its own legacy in-app login; a server-authenticated
-        // ADMIN bypasses it, matching the previous server build's behaviour.
-        if (profile.role === 'ADMIN') {
-          localStorage.setItem('uzum-analytics-merged-session-v3', JSON.stringify({
-            role: 'admin',
-            username: profile.username || 'Admin',
-            at: new Date().toISOString(),
-            serverAuthenticated: true
-          }));
-          sessionStorage.setItem('srerp_auth_session_v6', 'AUTH-ROOT-ADMIN');
-        }
-      }
-
       document.getElementById('loginForm').addEventListener('submit', function (event) {
         event.preventDefault();
         var button = document.getElementById('submitButton');
@@ -76,7 +62,11 @@
                   throw new Error('Hisobingiz faol emas. Administratorga murojaat qiling.');
                 });
               }
-              seedInternalSession(profile);
+              // Supabase is the only real login; bypass the app's legacy
+              // in-app login screen for every authenticated user.
+              if (window.smartRetailSeedInternalSession) {
+                window.smartRetailSeedInternalSession(profile);
+              }
               if (window.smartRetailSetAuthCookie) {
                 window.smartRetailSetAuthCookie(session.access_token, 7 * 24 * 3600);
               }
