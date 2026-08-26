@@ -45,6 +45,55 @@
      user gets the internal session seeded and never sees that screen.
      Actual permissions are enforced by the database (RLS), not by the
      legacy in-app role. */
+  /* The embedded ERP keeps its own local user list (srerp_auth_users_v6)
+     and unlocks when srerp_auth_session_v6 holds the id of an active entry.
+     Map the Supabase role onto the matching ERP role so cashiers get the
+     POS view, warehouse staff the WMS view, and admins everything. */
+  var ERP_USER_BY_ROLE = {
+    ADMIN: { id: 'AUTH-ROOT-ADMIN', username: 'Admin', role: 'ADMIN', protectedUser: true },
+    WMS: { id: 'AUTH-DEFAULT-WMS', username: 'WMS', role: 'WMS', protectedUser: false },
+    POS: { id: 'AUTH-DEFAULT-POS1', username: 'Pos1', role: 'POS', protectedUser: false },
+    VIEWER: { id: 'AUTH-DEFAULT-POS1', username: 'Pos1', role: 'POS', protectedUser: false }
+  };
+
+  function randomSecret() {
+    var bytes = new Uint8Array(12);
+    if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
+    return Array.prototype.map.call(bytes, function (b) { return b.toString(16); }).join('');
+  }
+
+  function seedErpSession(profile) {
+    var entry = ERP_USER_BY_ROLE[(profile && profile.role) || ''] || ERP_USER_BY_ROLE.VIEWER;
+    var users;
+    try { users = JSON.parse(localStorage.getItem('srerp_auth_users_v6') || '[]'); } catch (_) { users = []; }
+    if (!Array.isArray(users)) users = [];
+    var existing = users.find(function (u) { return u && u.id === entry.id; });
+    if (existing) {
+      existing.active = true;
+    } else {
+      users.push({
+        id: entry.id,
+        username: entry.username,
+        password: randomSecret(),
+        fullName: (profile && profile.username) || entry.username,
+        role: entry.role,
+        active: true,
+        protected: entry.protectedUser,
+        createdAt: new Date().toISOString()
+      });
+    }
+    localStorage.setItem('srerp_auth_users_v6', JSON.stringify(users));
+    sessionStorage.setItem('srerp_auth_session_v6', entry.id);
+    // If the ERP frame is already open and locked, unlock it in place.
+    try {
+      var frame = document.getElementById('smartRetailErpFrame');
+      var erpWindow = frame && frame.contentWindow;
+      if (erpWindow && typeof erpWindow.authResolveSession === 'function' && erpWindow.authResolveSession()) {
+        erpWindow.authUnlock();
+      }
+    } catch (_) { /* frame not open yet */ }
+  }
+
   function seedInternalSession(profile) {
     try {
       localStorage.setItem(MERGED_SESSION_KEY, JSON.stringify({
@@ -54,7 +103,7 @@
         serverAuthenticated: true,
         supabaseRole: profile ? profile.role : ''
       }));
-      sessionStorage.setItem('srerp_auth_session_v6', 'AUTH-ROOT-ADMIN');
+      seedErpSession(profile);
     } catch (_) { /* Storage can be unavailable in private windows. */ }
   }
   function clearInternalSession() {
