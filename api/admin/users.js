@@ -1,22 +1,17 @@
 /* Admin user-management API (Vercel serverless function).
    Runs server-side with the Supabase service-role key, which must never
-   reach the browser. Only callers whose verified email is listed in the
-   ADMIN_EMAILS environment variable may use it. Manages ACCOUNTS only —
-   it never reads or writes any user's workspace data.
+   reach the browser. Only members of the public.admins table (who are
+   themselves active) may use it. Manages ACCOUNTS only — it never reads
+   or writes any user's workspace data.
 
    Required environment variables (Vercel project settings):
      SUPABASE_URL               — project URL
      SUPABASE_ANON_KEY          — anon/publishable key (validates callers)
-     SUPABASE_SERVICE_ROLE_KEY  — service_role / secret key (admin ops)
-     ADMIN_EMAILS               — comma-separated admin login emails */
+     SUPABASE_SERVICE_ROLE_KEY  — service_role / secret key (admin ops) */
 
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
-  .split(',')
-  .map((value) => value.trim().toLowerCase())
-  .filter(Boolean);
 
 const serviceHeaders = {
   apikey: SERVICE_KEY,
@@ -59,13 +54,24 @@ async function authenticate(req) {
   }
 }
 
+// Admin = row in public.admins AND an active profile.
+async function isAdmin(userId) {
+  const [admins, profiles] = await Promise.all([
+    readJson(await fetch(`${SUPABASE_URL}/rest/v1/admins?select=user_id&user_id=eq.${encodeURIComponent(userId)}`, { headers: serviceHeaders })),
+    readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?select=active&id=eq.${encodeURIComponent(userId)}`, { headers: serviceHeaders }))
+  ]);
+  return admins.length > 0 && profiles.length > 0 && profiles[0].active !== false;
+}
+
 async function listUsers() {
-  const [authData, profiles] = await Promise.all([
+  const [authData, profiles, admins] = await Promise.all([
     readJson(await fetch(`${SUPABASE_URL}/auth/v1/admin/users?per_page=1000`, { headers: serviceHeaders })),
-    readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?select=id,username,active`, { headers: serviceHeaders }))
+    readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?select=id,username,active`, { headers: serviceHeaders })),
+    readJson(await fetch(`${SUPABASE_URL}/rest/v1/admins?select=user_id`, { headers: serviceHeaders }))
   ]);
   const authUsers = Array.isArray(authData) ? authData : (authData.users || []);
   const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
+  const adminIds = new Set(admins.map((row) => row.user_id));
   return authUsers.map((user) => {
     const profile = profileById.get(user.id) || {};
     return {
@@ -73,6 +79,7 @@ async function listUsers() {
       email: user.email || '',
       username: profile.username || '',
       active: profile.active !== false,
+      is_admin: adminIds.has(user.id),
       created_at: user.created_at || '',
       last_sign_in_at: user.last_sign_in_at || ''
     };
@@ -150,6 +157,27 @@ async function deleteUser(callerId, body) {
   return { ok: true };
 }
 
+async function setAdmin(callerId, body) {
+  const id = String(body.id || '');
+  if (!id) throw Object.assign(new Error('Foydalanuvchi tanlanmagan.'), { status: 400 });
+  if (body.is_admin === true) {
+    await readJson(await fetch(`${SUPABASE_URL}/rest/v1/admins?on_conflict=user_id`, {
+      method: 'POST',
+      headers: { ...serviceHeaders, prefer: 'resolution=ignore-duplicates,return=minimal' },
+      body: JSON.stringify({ user_id: id })
+    }));
+    return { ok: true };
+  }
+  if (id === callerId) {
+    throw Object.assign(new Error('O‘zingizni adminlikdan chiqara olmaysiz.'), { status: 400 });
+  }
+  await readJson(await fetch(`${SUPABASE_URL}/rest/v1/admins?user_id=eq.${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { ...serviceHeaders, prefer: 'return=minimal' }
+  }));
+  return { ok: true };
+}
+
 export default async function handler(req, res) {
   try {
     if (!SUPABASE_URL || !ANON_KEY) {
@@ -158,13 +186,10 @@ export default async function handler(req, res) {
     if (!SERVICE_KEY) {
       return res.status(500).json({ error: 'Server sozlanmagan: SUPABASE_SERVICE_ROLE_KEY qo‘shilmagan.' });
     }
-    if (!ADMIN_EMAILS.length) {
-      return res.status(500).json({ error: 'Server sozlanmagan: ADMIN_EMAILS qo‘shilmagan.' });
-    }
 
     const caller = await authenticate(req);
     if (!caller) return res.status(401).json({ error: 'Avtorizatsiya talab qilinadi.' });
-    if (!ADMIN_EMAILS.includes(String(caller.email || '').toLowerCase())) {
+    if (!(await isAdmin(caller.id))) {
       return res.status(403).json({ error: 'Bu sahifa faqat administrator uchun.' });
     }
 
@@ -179,6 +204,7 @@ export default async function handler(req, res) {
         case 'update': return res.status(200).json(await updateProfile(caller.id, body));
         case 'password': return res.status(200).json(await resetPassword(body));
         case 'delete': return res.status(200).json(await deleteUser(caller.id, body));
+        case 'set-admin': return res.status(200).json(await setAdmin(caller.id, body));
         default: return res.status(400).json({ error: 'Noma’lum amal.' });
       }
     }

@@ -113,6 +113,24 @@ create policy profiles_select_own on public.profiles
   for select to authenticated
   using (id = auth.uid());
 
+-- ------------------------------------------------------------ admins ------
+-- Members of this table may use the /admin dashboard (account management
+-- only — being an admin grants NO access to anyone's workspace data).
+-- The server function checks membership with the service key; the only
+-- client-visible thing is whether YOU are an admin (to show the link).
+
+create table if not exists public.admins (
+  user_id uuid primary key references auth.users (id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
+alter table public.admins enable row level security;
+
+drop policy if exists admins_select_self on public.admins;
+create policy admins_select_self on public.admins
+  for select to authenticated
+  using (user_id = auth.uid());
+
 -- --------------------------------------------------------- app_state ------
 
 create table if not exists public.app_state (
@@ -302,8 +320,14 @@ revoke all on function public.delete_app_state_version(bigint) from public, anon
 grant execute on function public.delete_app_state_version(bigint) to authenticated;
 
 -- ------------------------------------------------------------ notes -------
--- Accounts are created in the dashboard (Authentication -> Users -> Add
--- user, "Auto Confirm User" checked). Every account is a fully private
--- workspace with all features; there are no roles.
+-- Every account is a fully private workspace with all features; there are
+-- no data roles. Accounts are managed on the /admin page by members of the
+-- admins table. Seed the FIRST admin once (later ones are granted from the
+-- /admin page itself):
+--
+--   insert into public.admins (user_id)
+--   select id from auth.users where email = 'OWNER-EMAIL-HERE'
+--   on conflict (user_id) do nothing;
+--
 -- Block an account without deleting its data:
 --   update public.profiles set active = false where id = '...';

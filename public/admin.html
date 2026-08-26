@@ -34,6 +34,7 @@
     .badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700}
     .badge.on{background:rgba(48,209,88,.15);color:#5fd98c}
     .badge.off{background:rgba(255,90,90,.15);color:#ff8c8c}
+    .badge.adm{background:rgba(110,100,245,.2);color:#a9a2ff;margin-left:6px}
     .muted{color:#8ea0bd;font-size:11.5px}
     .actions{display:flex;gap:6px;flex-wrap:wrap}
     .denied{max-width:520px;margin:12vh auto;text-align:center}
@@ -136,7 +137,8 @@
           tr.innerHTML =
             '<td>' + esc(user.email) + (isMe ? ' <span class="muted">(siz)</span>' : '') + '</td>' +
             '<td>' + esc(user.username || '—') + '</td>' +
-            '<td><span class="badge ' + (user.active ? 'on">Faol' : 'off">Bloklangan') + '</span></td>' +
+            '<td><span class="badge ' + (user.active ? 'on">Faol' : 'off">Bloklangan') + '</span>' +
+              (user.is_admin ? '<span class="badge adm">Admin</span>' : '') + '</td>' +
             '<td class="muted">' + fmtDate(user.created_at) + '</td>' +
             '<td class="muted">' + fmtDate(user.last_sign_in_at) + '</td>' +
             '<td></td>';
@@ -166,6 +168,18 @@
           actions.appendChild(passwordButton);
 
           if (!isMe) {
+            var adminButton = document.createElement('button');
+            adminButton.className = 'small ghost';
+            adminButton.textContent = user.is_admin ? 'Adminlikdan olish' : 'Admin qilish';
+            adminButton.onclick = function () {
+              var question = user.is_admin
+                ? user.email + ' adminlikdan chiqarilsinmi? U /admin sahifasiga kira olmaydi.'
+                : user.email + ' admin qilinsinmi? U foydalanuvchilarni boshqara oladi (lekin hech kimning ma’lumotini ko‘ra olmaydi).';
+              if (!window.confirm(question)) return;
+              run(adminButton, { action: 'set-admin', id: user.id, is_admin: !user.is_admin });
+            };
+            actions.appendChild(adminButton);
+
             var toggleButton = document.createElement('button');
             toggleButton.className = 'small ' + (user.active ? 'danger' : 'ok');
             toggleButton.textContent = user.active ? 'Bloklash' : 'Faollashtirish';

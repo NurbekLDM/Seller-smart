@@ -63,8 +63,10 @@ npm run build
    - `SUPABASE_SERVICE_ROLE_KEY` — the service_role / secret key
      (Supabase → Project Settings → API). Server-side only — powers the
      `/api/admin/users` function; never ship it to the browser.
-   - `ADMIN_EMAILS` — comma-separated login emails allowed to open the
-     admin dashboard, e.g. `owner@example.com`
+
+Admin access is controlled by the `public.admins` table. Seed the first
+admin once (SQL Editor, see the note at the end of `supabase/schema.sql`);
+after that, admins grant/revoke admin from the `/admin` page itself.
 4. Deploy. Optionally attach the customer's domain under **Settings → Domains**.
 
 ## Verify after deploy
