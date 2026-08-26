@@ -60,6 +60,11 @@ npm run build
 3. **Environment Variables** (Production):
    - `SUPABASE_URL` — the Project URL
    - `SUPABASE_ANON_KEY` — the anon/publishable key
+   - `SUPABASE_SERVICE_ROLE_KEY` — the service_role / secret key
+     (Supabase → Project Settings → API). Server-side only — powers the
+     `/api/admin/users` function; never ship it to the browser.
+   - `ADMIN_EMAILS` — comma-separated login emails allowed to open the
+     admin dashboard, e.g. `owner@example.com`
 4. Deploy. Optionally attach the customer's domain under **Settings → Domains**.
 
 ## Verify after deploy

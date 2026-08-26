@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Smart Retail ERP — foydalanuvchilar</title>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;padding:26px 18px;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#e8eef9;background:radial-gradient(800px 480px at 80% 5%,rgba(104,92,246,.3),transparent 62%),radial-gradient(600px 420px at 12% 98%,rgba(4,177,192,.16),transparent 60%),#091120}
+    .wrap{max-width:980px;margin:0 auto}
+    .top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+    h1{margin:0;font-size:22px;letter-spacing:-.03em}
+    .sub{color:#96a6bf;font-size:12.5px;margin-top:4px}
+    a.back{color:#8fb2ff;text-decoration:none;font-size:13px;font-weight:600}
+    .card{padding:20px;border:1px solid rgba(255,255,255,.1);border-radius:18px;background:rgba(13,22,40,.86);box-shadow:0 20px 60px rgba(0,0,0,.35);margin-bottom:16px}
+    .card h2{margin:0 0 12px;font-size:15px}
+    .row{display:flex;gap:8px;flex-wrap:wrap}
+    input{height:42px;padding:0 12px;border:1px solid rgba(255,255,255,.14);border-radius:10px;background:#101b30;color:#fff;font-size:13px;outline:none;flex:1;min-width:170px}
+    input:focus{border-color:#786eff}
+    button{height:42px;padding:0 16px;border:0;border-radius:10px;background:linear-gradient(105deg,#6961fa,#3686ef);color:#fff;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap}
+    button.ghost{background:rgba(255,255,255,.08);color:#c8d5ea}
+    button.small{height:30px;padding:0 10px;font-size:11.5px;border-radius:8px}
+    button.danger{background:#823a3a}
+    button.ok{background:#2f855a}
+    button:disabled{opacity:.55;cursor:wait}
+    .notice{display:none;margin-top:12px;padding:12px;border-radius:10px;background:rgba(48,209,88,.12);border:1px solid rgba(48,209,88,.4);font-size:13px;word-break:break-all}
+    .notice b{user-select:all}
+    .error{margin-top:10px;color:#ff788c;font-size:12.5px;min-height:16px}
+    .table-wrap{overflow-x:auto}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    th,td{text-align:left;padding:10px 10px;border-bottom:1px solid rgba(255,255,255,.07);vertical-align:middle;white-space:nowrap}
+    th{color:#8ea0bd;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+    .badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700}
+    .badge.on{background:rgba(48,209,88,.15);color:#5fd98c}
+    .badge.off{background:rgba(255,90,90,.15);color:#ff8c8c}
+    .muted{color:#8ea0bd;font-size:11.5px}
+    .actions{display:flex;gap:6px;flex-wrap:wrap}
+    .denied{max-width:520px;margin:12vh auto;text-align:center}
+  </style>
+  <script src="assets/app-config.js"></script>
+  <script src="assets/vendor/supabase.js"></script>
+  <script src="assets/auth-guard.js"></script>
+</head>
+<body>
+  <div class="wrap" id="app" style="display:none">
+    <div class="top">
+      <div>
+        <h1>Foydalanuvchilarni boshqarish</h1>
+        <div class="sub">Hisoblar yaratish, bloklash va parol almashtirish. Har bir hisob — to‘liq izolyatsiyalangan shaxsiy workspace; bu sahifa hech kimning ma’lumotlarini ko‘ra olmaydi.</div>
+      </div>
+      <a class="back" href="/">← Dasturga qaytish</a>
+    </div>
+
+    <div class="card">
+      <h2>Yangi foydalanuvchi</h2>
+      <div class="row">
+        <input id="newEmail" type="email" placeholder="email@misol.uz" maxlength="120">
+        <input id="newUsername" type="text" placeholder="Ko‘rinadigan ism (ixtiyoriy)" maxlength="60">
+        <input id="newPassword" type="text" placeholder="Parol (kamida 8 belgi)" maxlength="72" autocomplete="off">
+        <button class="ghost" id="genBtn" type="button">Parol yaratish</button>
+        <button id="createBtn" type="button">Qo‘shish</button>
+      </div>
+      <div class="notice" id="notice"></div>
+      <div class="error" id="createError"></div>
+    </div>
+
+    <div class="card">
+      <h2>Foydalanuvchilar <span class="muted" id="countLabel"></span></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Email</th><th>Ism</th><th>Holat</th><th>Yaratilgan</th><th>Oxirgi kirish</th><th>Amallar</th></tr></thead>
+          <tbody id="rows"><tr><td colspan="6" class="muted">Yuklanmoqda...</td></tr></tbody>
+        </table>
+      </div>
+      <div class="error" id="listError"></div>
+    </div>
+  </div>
+
+  <div class="wrap denied card" id="denied" style="display:none">
+    <h1>Ruxsat yo‘q</h1>
+    <p class="sub" id="deniedText">Bu sahifa faqat administrator uchun.</p>
+    <p><a class="back" href="/">← Dasturga qaytish</a></p>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+      var client = window.smartRetailSupabase;
+      var me = null;
+
+      function el(id) { return document.getElementById(id); }
+      function esc(value) { return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) { return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; }); }
+      function fmtDate(value) { return value ? new Date(value).toLocaleString() : '—'; }
+
+      function generatePassword() {
+        var alphabet = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+        var bytes = new Uint8Array(12);
+        window.crypto.getRandomValues(bytes);
+        var out = '';
+        for (var i = 0; i < bytes.length; i += 1) out += alphabet[bytes[i] % alphabet.length];
+        return out;
+      }
+
+      function showDenied(message) {
+        el('app').style.display = 'none';
+        el('denied').style.display = 'block';
+        if (message) el('deniedText').textContent = message;
+      }
+
+      async function api(method, body) {
+        var session = (await client.auth.getSession()).data.session;
+        if (!session) { window.location.replace('/login.html'); throw new Error('no session'); }
+        var response = await fetch('/api/admin/users', {
+          method: method,
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + session.access_token },
+          body: body ? JSON.stringify(body) : undefined
+        });
+        var payload = {};
+        try { payload = await response.json(); } catch (_) {}
+        if (!response.ok) {
+          var error = new Error(payload.error || ('HTTP ' + response.status));
+          error.status = response.status;
+          throw error;
+        }
+        return payload;
+      }
+
+      function renderRows(users) {
+        var tbody = el('rows');
+        tbody.innerHTML = '';
+        el('countLabel').textContent = '· ' + users.length + ' ta';
+        users.forEach(function (user) {
+          var tr = document.createElement('tr');
+          var isMe = me && user.id === me.id;
+          tr.innerHTML =
+            '<td>' + esc(user.email) + (isMe ? ' <span class="muted">(siz)</span>' : '') + '</td>' +
+            '<td>' + esc(user.username || '—') + '</td>' +
+            '<td><span class="badge ' + (user.active ? 'on">Faol' : 'off">Bloklangan') + '</span></td>' +
+            '<td class="muted">' + fmtDate(user.created_at) + '</td>' +
+            '<td class="muted">' + fmtDate(user.last_sign_in_at) + '</td>' +
+            '<td></td>';
+          var actions = document.createElement('div');
+          actions.className = 'actions';
+
+          var renameButton = document.createElement('button');
+          renameButton.className = 'small ghost';
+          renameButton.textContent = 'Ism';
+          renameButton.onclick = function () {
+            var name = window.prompt('Ko‘rinadigan ism:', user.username || '');
+            if (name === null) return;
+            run(renameButton, { action: 'update', id: user.id, username: name });
+          };
+          actions.appendChild(renameButton);
+
+          var passwordButton = document.createElement('button');
+          passwordButton.className = 'small ghost';
+          passwordButton.textContent = 'Parol';
+          passwordButton.onclick = function () {
+            var password = generatePassword();
+            if (!window.confirm(user.email + ' uchun yangi parol o‘rnatilsinmi?\n\nYangi parol: ' + password + '\n\nOK bosilgach parolni nusxalab oling — u qayta ko‘rinmaydi.')) return;
+            run(passwordButton, { action: 'password', id: user.id, password: password }, function () {
+              showNotice(user.email + ' uchun yangi parol: <b>' + esc(password) + '</b> — hozir nusxalab oling.');
+            });
+          };
+          actions.appendChild(passwordButton);
+
+          if (!isMe) {
+            var toggleButton = document.createElement('button');
+            toggleButton.className = 'small ' + (user.active ? 'danger' : 'ok');
+            toggleButton.textContent = user.active ? 'Bloklash' : 'Faollashtirish';
+            toggleButton.onclick = function () {
+              if (user.active && !window.confirm(user.email + ' bloklansinmi? U tizimga kira olmaydi, ma’lumotlari saqlanib qoladi.')) return;
+              run(toggleButton, { action: 'update', id: user.id, active: !user.active });
+            };
+            actions.appendChild(toggleButton);
+
+            var deleteButton = document.createElement('button');
+            deleteButton.className = 'small danger';
+            deleteButton.textContent = 'O‘chirish';
+            deleteButton.onclick = function () {
+              var typed = window.prompt('DIQQAT: hisob va uning BARCHA ma’lumotlari butunlay o‘chadi.\nTasdiqlash uchun emailni yozing: ' + user.email);
+              if (typed === null) return;
+              if (typed.trim().toLowerCase() !== user.email.toLowerCase()) { window.alert('Email mos kelmadi — bekor qilindi.'); return; }
+              run(deleteButton, { action: 'delete', id: user.id });
+            };
+            actions.appendChild(deleteButton);
+          }
+
+          tr.lastElementChild.appendChild(actions);
+          tbody.appendChild(tr);
+        });
+      }
+
+      function showNotice(html) {
+        var notice = el('notice');
+        notice.innerHTML = html;
+        notice.style.display = 'block';
+      }
+
+      async function load() {
+        try {
+          var data = await api('GET');
+          me = data.me;
+          el('app').style.display = 'block';
+          el('denied').style.display = 'none';
+          renderRows(data.users || []);
+          el('listError').textContent = '';
+        } catch (error) {
+          if (error.status === 403 || error.status === 401) showDenied(error.message);
+          else if (error.status === 500) showDenied(error.message);
+          else el('listError').textContent = error.message;
+        }
+      }
+
+      function run(button, body, onDone) {
+        button.disabled = true;
+        api('POST', body).then(function () {
+          if (onDone) onDone();
+          return load();
+        }).catch(function (error) {
+          window.alert('Xatolik: ' + error.message);
+        }).finally(function () { button.disabled = false; });
+      }
+
+      el('genBtn').onclick = function () { el('newPassword').value = generatePassword(); };
+      el('createBtn').onclick = function () {
+        var email = el('newEmail').value.trim();
+        var username = el('newUsername').value.trim();
+        var password = el('newPassword').value;
+        el('createError').textContent = '';
+        if (!email) { el('createError').textContent = 'Email kiriting.'; return; }
+        if (!password || password.length < 8) { el('createError').textContent = 'Parol kamida 8 belgi bo‘lsin (yoki "Parol yaratish" tugmasini bosing).'; return; }
+        var button = el('createBtn');
+        button.disabled = true;
+        api('POST', { action: 'create', email: email, username: username, password: password }).then(function () {
+          showNotice(esc(email) + ' yaratildi. Parol: <b>' + esc(password) + '</b> — hozir nusxalab foydalanuvchiga yuboring.');
+          el('newEmail').value = ''; el('newUsername').value = ''; el('newPassword').value = '';
+          return load();
+        }).catch(function (error) {
+          el('createError').textContent = error.message;
+        }).finally(function () { button.disabled = false; });
+      };
+
+      if (!client) { showDenied('Tizim sozlanmagan.'); return; }
+      if (window.smartRetailAuthReady) {
+        window.smartRetailAuthReady.then(function (session) { if (session) load(); });
+      } else {
+        load();
+      }
+    })();
+  </script>
+</body>
+</html>

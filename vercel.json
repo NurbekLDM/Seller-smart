@@ -4,7 +4,8 @@
   "cleanUrls": false,
   "trailingSlash": false,
   "redirects": [
-    { "source": "/login", "destination": "/login.html", "permanent": false }
+    { "source": "/login", "destination": "/login.html", "permanent": false },
+    { "source": "/admin", "destination": "/admin.html", "permanent": false }
   ],
   "headers": [
     {
@@ -17,7 +18,7 @@
       ]
     },
     {
-      "source": "/(index.html|login.html|)",
+      "source": "/(index.html|login.html|admin.html|)",
       "headers": [
         { "key": "Cache-Control", "value": "private, no-cache" }
       ]
