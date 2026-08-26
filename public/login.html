@@ -46,6 +46,7 @@
         event.preventDefault();
         var button = document.getElementById('submitButton');
         button.disabled = true;
+        button.textContent = 'Kirilmoqda...';
         errorBox.textContent = '';
         var email = document.getElementById('email').value.trim();
         var password = document.getElementById('password').value;
@@ -74,6 +75,7 @@
           errorBox.textContent = problem.message || 'Tizimga kirib bo‘lmadi.';
           document.getElementById('password').focus();
           button.disabled = false;
+          button.textContent = 'Tizimga kirish';
         });
       });
     })();

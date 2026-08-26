@@ -232,7 +232,10 @@
       var overlay = document.createElement('div');
       overlay.id = 'srLogoutOverlay';
       overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;background:#091120;color:#dbe6f7;font:600 15px -apple-system,"Segoe UI",sans-serif';
-      overlay.textContent = 'Chiqilmoqda...';
+      overlay.innerHTML = '<style>@keyframes srSpin{to{transform:rotate(360deg)}}</style>' +
+        '<div style="text-align:center">' +
+        '<div style="width:44px;height:44px;margin:0 auto 14px;border-radius:50%;border:3px solid rgba(120,110,255,.25);border-top-color:#786eff;animation:srSpin 1s linear infinite"></div>' +
+        'Chiqilmoqda...</div>';
       (document.body || document.documentElement).appendChild(overlay);
     } catch (_) { /* ignore */ }
   }
@@ -278,8 +281,23 @@
     if (typeof html !== 'string' || !html) return html;
     if (html === erpWrappedSource) return erpWrappedOutput;
     var block = '<style id="srBootAuthHide">body.auth-locked{visibility:hidden!important}</style>' +
-      '<script>setTimeout(function(){var s=document.getElementById("srBootAuthHide");' +
-      'if(s&&document.body&&document.body.classList.contains("auth-locked"))s.parentNode.removeChild(s);},5000);<\/script>';
+      '<style>@keyframes srSpin{to{transform:rotate(360deg)}}</style>' +
+      '<script>(function(){' +
+      // Spinner splash attached to <html>, so it stays visible while the
+      // locked body is hidden; removed as soon as the ERP unlocks.
+      'var splash=document.createElement("div");splash.id="srErpBootSplash";' +
+      'splash.setAttribute("style","position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;background:#07111f;visibility:visible");' +
+      'splash.innerHTML=\'<div style="text-align:center;color:#8ea0bd;font:600 13px -apple-system,\\\'Segoe UI\\\',sans-serif">' +
+      '<div style="width:42px;height:42px;margin:0 auto 12px;border-radius:50%;border:3px solid rgba(120,110,255,.25);border-top-color:#786eff;animation:srSpin 1s linear infinite"></div>' +
+      'ERP yuklanmoqda...</div>\';' +
+      'document.documentElement.appendChild(splash);' +
+      'function gone(){if(splash&&splash.parentNode)splash.parentNode.removeChild(splash);splash=null;}' +
+      'function unlocked(){return document.body&&!document.body.classList.contains("auth-locked");}' +
+      'var poll=setInterval(function(){if(unlocked()){gone();clearInterval(poll);}},120);' +
+      'setTimeout(function(){clearInterval(poll);gone();' +
+      'var hide=document.getElementById("srBootAuthHide");' +
+      'if(hide&&document.body&&document.body.classList.contains("auth-locked"))hide.parentNode.removeChild(hide);},5000);' +
+      '})();<\/script>';
     var output = html.replace(/<head([^>]*)>/i, '<head$1>' + block);
     if (output === html) output = block + html;
     erpWrappedSource = html;
