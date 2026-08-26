@@ -71,6 +71,41 @@
   }
   window.smartRetailSeedInternalSession = seedInternalSession;
 
+  function signOutAndRedirect() {
+    clearInternalSession();
+    client.auth.signOut().catch(function () {}).then(function () {
+      setAuthCookie('', 0);
+      window.location.replace('/login.html');
+    });
+  }
+  window.smartRetailSignOut = signOutAndRedirect;
+
+  /* The app's own logout button ("logoutBtn" -> mergedLogout) only clears
+     the legacy in-app session, so the Supabase session would survive and
+     the guard would sign the user right back in. Attach the real sign-out
+     to the same button, and wrap the global as a fallback for any other
+     caller. */
+  function hookLogout() {
+    var button = document.getElementById('logoutBtn');
+    if (button && !button.dataset.srSupabaseLogout) {
+      button.dataset.srSupabaseLogout = '1';
+      button.addEventListener('click', signOutAndRedirect);
+    }
+    var original = window.mergedLogout;
+    if (typeof original === 'function' && !original.srSupabaseWrapped) {
+      var wrapped = function () {
+        try { original.apply(this, arguments); } catch (_) { /* ignore */ }
+        signOutAndRedirect();
+      };
+      wrapped.srSupabaseWrapped = true;
+      window.mergedLogout = wrapped;
+    }
+  }
+  if (!/login/.test(window.location.pathname)) {
+    document.addEventListener('DOMContentLoaded', hookLogout);
+    window.addEventListener('load', hookLogout);
+  }
+
   client.auth.onAuthStateChange(function (event, session) {
     if (session && session.access_token) setAuthCookie(session.access_token, COOKIE_MAX_AGE);
     if (event === 'SIGNED_OUT') {
