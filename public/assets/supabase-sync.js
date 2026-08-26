@@ -286,14 +286,26 @@
       window.addEventListener('online', notify);
       // The app's reset buttons (clearDataBtn/hardResetBtn) clear local data
       // without calling saveState, so the cleared state never reached the
-      // database and reappeared on reload. Push the state after the reset
-      // (and its confirm dialog) had time to finish; a cancelled confirm
-      // just re-saves the unchanged state, which is harmless.
+      // database and reappeared on reload. Wrap their handlers so the sync
+      // push runs exactly after the (async) reset completes; a cancelled
+      // confirm just re-saves the unchanged state, which is harmless.
+      ['clearDataBtn', 'hardResetBtn'].forEach(function (buttonId) {
+        var resetButton = document.getElementById(buttonId);
+        if (!resetButton) return;
+        var originalHandler = resetButton.onclick || window.resetAll;
+        resetButton.onclick = async function (event) {
+          try {
+            if (typeof originalHandler === 'function') await originalHandler.call(this, event);
+          } finally {
+            notify();
+          }
+        };
+      });
+      // Fallback for any other path that triggers a reset.
       document.addEventListener('click', function (event) {
         var target = event.target;
         if (!target || !target.closest) return;
         if (target.closest('#clearDataBtn') || target.closest('#hardResetBtn')) {
-          window.setTimeout(notify, 1500);
           window.setTimeout(notify, 4000);
         }
       }, true);
