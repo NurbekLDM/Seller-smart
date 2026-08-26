@@ -36,23 +36,25 @@ begin
                where table_schema = 'public' and table_name = 'profiles' and column_name = 'role') then
       execute 'select id from public.profiles where role = ''ADMIN'' order by created_at limit 1' into target;
     end if;
-    drop table public.app_state cascade;
-    create table public.app_state (
+    -- All statements touching app_state are dynamic (execute) so the block
+    -- never binds to the dropped table's old OID.
+    execute 'drop table public.app_state cascade';
+    execute 'create table public.app_state (
       user_id uuid primary key references auth.users (id) on delete cascade,
       version bigint not null default 0,
-      snapshot jsonb not null default '{}'::jsonb,
+      snapshot jsonb not null default ''{}''::jsonb,
       updated_at timestamptz not null default now()
-    );
+    )';
     if target is not null and old_snapshot is not null then
-      insert into public.app_state (user_id, version, snapshot)
-      values (target, coalesce(old_version, 0), old_snapshot);
+      execute 'insert into public.app_state (user_id, version, snapshot) values ($1, $2, $3)'
+        using target, coalesce(old_version, 0), old_snapshot;
     end if;
   end if;
   -- v1 history was keyed by the shared state id; it cannot be mapped to
   -- individual users, so it is dropped.
   if exists (select 1 from information_schema.columns
              where table_schema = 'public' and table_name = 'app_state_history' and column_name = 'state_id') then
-    drop table public.app_state_history cascade;
+    execute 'drop table public.app_state_history cascade';
   end if;
 end $$;
 
