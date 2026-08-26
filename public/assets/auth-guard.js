@@ -225,18 +225,19 @@
     setAuthCookie(session.access_token, COOKIE_MAX_AGE);
     if (onLoginPage) return session;
 
-    // A different user signed in on this browser: wipe the previous user's
-    // local data before anything touches it, then boot fresh.
+    // Wipe local data unless it verifiably belongs to the signed-in user:
+    // a different recorded user OR no recorded user at all (data of unknown
+    // origin) both trigger the wipe. The user's real data lives in the
+    // database and is restored by the sync right after the clean reload.
     var previousUser = null;
     try { previousUser = localStorage.getItem(ACTIVE_USER_KEY); } catch (_) { /* ignore */ }
-    if (previousUser && previousUser !== session.user.id) {
+    if (previousUser !== session.user.id) {
       return wipeLocalWorkspace().then(function () {
         try { localStorage.setItem(ACTIVE_USER_KEY, session.user.id); } catch (_) { /* ignore */ }
         window.location.reload();
         return new Promise(function () {}); // page is reloading
       });
     }
-    try { localStorage.setItem(ACTIVE_USER_KEY, session.user.id); } catch (_) { /* ignore */ }
 
     // App page: make sure the legacy in-app login is bypassed. The app
     // checks its session key synchronously at startup, so if it was missing
