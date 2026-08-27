@@ -4,3 +4,4 @@ node_modules/
 .env.*
 *.local
 _recovered-notes.txt
+src/app.v21.backup.html
