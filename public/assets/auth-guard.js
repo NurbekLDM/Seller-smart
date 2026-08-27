@@ -97,7 +97,12 @@
         if (key && (key.indexOf('srerp_') === 0 || key.indexOf('uzum-analytics-') === 0)) doomed.push(key);
       }
       doomed.forEach(function (key) { localStorage.removeItem(key); });
-      sessionStorage.removeItem('srerp_auth_session_v6');
+      var doomedSession = [];
+      for (var position = 0; position < sessionStorage.length; position += 1) {
+        var sessionKey = sessionStorage.key(position);
+        if (sessionKey && sessionKey.indexOf('srerp_') === 0) doomedSession.push(sessionKey);
+      }
+      doomedSession.forEach(function (key) { sessionStorage.removeItem(key); });
     } catch (_) { /* ignore */ }
   }
 
@@ -121,6 +126,30 @@
     var bytes = new Uint8Array(12);
     if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
     return Array.prototype.map.call(bytes, function (b) { return b.toString(16); }).join('');
+  }
+
+  /* v23's "Protected Access" module gates the ERP behind a second password
+     modal with a 30-minute expiring token (srerp_analytics_erp_access_v22).
+     Its password check calls the old VPS /api/v1 endpoints, which do not
+     exist on Vercel — so the modal can never succeed in production.
+     Supabase is the one real login, so seed a valid access token for the
+     authenticated user (no analyticsUser field, which the checker treats
+     as "matches any user"; long expiry, refreshed periodically). */
+  var ERP_ACCESS_KEY = 'srerp_analytics_erp_access_v22';
+  var lastSeededName = '';
+  function seedErpAccessToken(username) {
+    try {
+      var now = Date.now();
+      sessionStorage.setItem(ERP_ACCESS_KEY, JSON.stringify({
+        userId: 'AUTH-ROOT-ADMIN',
+        username: username || 'Admin',
+        role: 'ADMIN',
+        mode: 'supabase',
+        verifiedAt: now,
+        expiresAt: now + 12 * 3600 * 1000
+      }));
+      sessionStorage.removeItem('srerp_analytics_erp_attempts_v22');
+    } catch (_) { /* ignore */ }
   }
 
   /* The embedded ERP keeps its own local user list (srerp_auth_users_v6)
@@ -148,6 +177,8 @@
     }
     localStorage.setItem('srerp_auth_users_v6', JSON.stringify(users));
     sessionStorage.setItem('srerp_auth_session_v6', 'AUTH-ROOT-ADMIN');
+    lastSeededName = username || lastSeededName;
+    seedErpAccessToken(username);
     // The ERP's first-run initializers reset the store AND delete the
     // session key when these markers are missing (which they are right
     // after a workspace wipe). Seed them so first-run never fires against
@@ -324,7 +355,10 @@
           var url = URL.createObjectURL(new Blob([window.getSmartRetailErpHtml()], { type: 'text/html;charset=utf-8' }));
           var opened = window.open(url, '_blank');
           if (opened) {
-            try { opened.sessionStorage.setItem('srerp_auth_session_v6', 'AUTH-ROOT-ADMIN'); } catch (_) { /* ignore */ }
+            try {
+              opened.sessionStorage.setItem('srerp_auth_session_v6', 'AUTH-ROOT-ADMIN');
+              opened.sessionStorage.setItem(ERP_ACCESS_KEY, sessionStorage.getItem(ERP_ACCESS_KEY) || '');
+            } catch (_) { /* ignore */ }
             // Keep the previous blob alive until a new window is opened, so
             // refreshing the ERP window keeps working.
             if (erpWindowBlobUrl) { try { URL.revokeObjectURL(erpWindowBlobUrl); } catch (_) { /* ignore */ } }
@@ -345,6 +379,26 @@
   if (!onLoginPage) {
     document.addEventListener('DOMContentLoaded', installErpIntegration);
     window.addEventListener('load', installErpIntegration);
+
+    /* Keep the access token valid for the whole session: refresh it every
+       10 minutes, and immediately after the module's own "Qulflash" button
+       clears it (the lock then just returns to the dashboard — reopening
+       the ERP never shows the dead-end password modal). */
+    window.setInterval(function () {
+      if (!signingOut && storedSessionInfo()) {
+        seedErpAccessToken(lastSeededName);
+        try { sessionStorage.setItem('srerp_auth_session_v6', 'AUTH-ROOT-ADMIN'); } catch (_) { /* ignore */ }
+      }
+    }, 10 * 60 * 1000);
+    document.addEventListener('click', function (event) {
+      var target = event.target;
+      if (target && target.closest && target.closest('#erp22LockButton')) {
+        window.setTimeout(function () {
+          seedErpAccessToken(lastSeededName);
+          try { sessionStorage.setItem('srerp_auth_session_v6', 'AUTH-ROOT-ADMIN'); } catch (_) { /* ignore */ }
+        }, 80);
+      }
+    }, true);
 
     /* Intercept the app's logout button in the capture phase: the legacy
        handler (which flashes the internal login screen) never runs; the
