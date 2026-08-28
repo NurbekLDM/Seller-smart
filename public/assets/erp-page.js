@@ -133,9 +133,14 @@
 
   /* Owner-only: bridge the ERP's own native "Employees" screen (its
      login+permissions modal already exists, built by the vendor) to real,
-     cross-device Supabase accounts instead of browser-only storage. */
+     cross-device Supabase accounts instead of browser-only storage.
+     Returns the reconcile() function so the caller can decide WHEN to run
+     the first sync — it must not run concurrently with the initial
+     app_state restore, or restore() can overwrite a just-applied prune
+     with the still-stale server snapshot. */
+  var installedReconcile = null;
   function hookEmployeeManagement() {
-    if (window.__srEmployeeHookInstalled) return;
+    if (window.__srEmployeeHookInstalled) return installedReconcile;
     window.__srEmployeeHookInstalled = true;
 
     function withSession() {
@@ -265,7 +270,8 @@
       }
     }, true);
 
-    reconcile();
+    installedReconcile = reconcile;
+    return reconcile;
   }
 
   function tryUnlock() {
@@ -591,9 +597,10 @@
         } catch (_) { /* ignore */ }
         seedErpAuth(role, name, session.user.id, modules);
         tryUnlock();
+        var employeeReconcile = null;
         if (role === 'OWNER') {
           domReady.then(function () {
-            try { hookEmployeeManagement(); } catch (error) { console.warn('Employee management unavailable:', error.message); }
+            try { employeeReconcile = hookEmployeeManagement(); } catch (error) { console.warn('Employee management unavailable:', error.message); }
           });
         }
 
@@ -613,6 +620,14 @@
             syncActive = true;
             announce('online', revision ? 'Ulangan · v' + revision : 'Ulangan');
             tryUnlock();
+            // Only reconcile employees AFTER the initial restore has landed —
+            // running it concurrently let restore()'s server snapshot
+            // silently overwrite a just-applied prune with stale data.
+            if (role === 'OWNER') {
+              (employeeReconcile ? Promise.resolve(employeeReconcile) : domReady.then(hookEmployeeManagement))
+                .then(function (fn) { return fn && fn(); })
+                .catch(function (error) { console.warn('Employee reconcile unavailable:', error.message); });
+            }
           }).catch(function () {
             announce('error', 'Bazaga ulanib bo‘lmadi — qayta urinilmoqda');
             var wait = Math.min(30000, 3000 * Math.pow(2, Math.min(attempt, 4)));
