@@ -176,6 +176,24 @@
       };
     }
 
+    // The vendor's sales-tracking "Xodimlar" table (DB_KEYS.employees) has
+    // no delete button of its own — it is only ever a mirror, kept by
+    // authUserId, of the login accounts that exist. Drop rows whose login
+    // no longer exists (deleted staff, or old local-only test accounts
+    // created before this bridge existed and never had a real backend).
+    function pruneOperationalEmployees(validIds) {
+      try {
+        if (typeof db_get !== 'function' || typeof db_set !== 'function' || typeof DB_KEYS === 'undefined' || !DB_KEYS.employees) return;
+        var rows = db_get(DB_KEYS.employees);
+        if (!Array.isArray(rows)) return;
+        var pruned = rows.filter(function (row) { return !row.authUserId || validIds.has(row.authUserId); });
+        if (pruned.length !== rows.length) {
+          db_set(DB_KEYS.employees, pruned);
+          try { if (typeof renderEmployees === 'function') renderEmployees(); } catch (_) { /* ignore */ }
+        }
+      } catch (_) { /* best-effort cleanup */ }
+    }
+
     function reconcile() {
       return apiRequest('GET').then(function (data) {
         var staff = data.staff || [];
@@ -185,6 +203,7 @@
         if (typeof authSetUsers === 'function') authSetUsers(kept);
         try { authRenderUserTable(); } catch (_) { /* not rendered yet */ }
         try { if (typeof renderEmployees === 'function') renderEmployees(); } catch (_) { /* ignore */ }
+        pruneOperationalEmployees(new Set(kept.map(function (u) { return u.id; })));
       }).catch(function (error) { console.warn('Staff list unavailable:', error.message); });
     }
 
