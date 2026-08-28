@@ -143,6 +143,12 @@
     if (window.__srEmployeeHookInstalled) return installedReconcile;
     window.__srEmployeeHookInstalled = true;
 
+    try {
+      var style = document.createElement('style');
+      style.textContent = '#authUsersTable tbody tr{cursor:pointer}#authUsersTable tbody tr:hover{background:rgba(255,255,255,.04)}';
+      document.head.appendChild(style);
+    } catch (_) { /* cosmetic only */ }
+
     function withSession() {
       return client.auth.getSession().then(function (result) {
         var current = result.data && result.data.session;
@@ -177,7 +183,71 @@
         landing: perms[0],
         active: member.active,
         protected: false,
-        createdAt: new Date().toISOString()
+        createdAt: member.created_at || new Date().toISOString(),
+        lastSignInAt: member.last_sign_in_at || ''
+      };
+    }
+
+    function esc(value) {
+      return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+      });
+    }
+    function moduleLabel(id) {
+      try { if (typeof authV12ViewLabel === 'function') return authV12ViewLabel(id); } catch (_) { /* ignore */ }
+      return id;
+    }
+
+    // Read-only details view for one row — the vendor's own "edit" modal
+    // is for changing login/permissions, not for glancing at status/last
+    // sign-in, so this is a separate, lighter overlay.
+    function closeEmployeeDetails() {
+      var existing = document.getElementById('srEmployeeDetails');
+      if (existing) existing.remove();
+    }
+    function showEmployeeDetails(user) {
+      closeEmployeeDetails();
+      var isAdmin = user.role === 'ADMIN' || user.protected;
+      var modules = Array.isArray(user.permissions) ? user.permissions : [];
+      var chips = isAdmin
+        ? '<span style="color:#5fd98c;font-weight:700">Barcha bo‘limlar</span>'
+        : (modules.length
+          ? modules.map(function (id) {
+              return '<span style="display:inline-flex;padding:3px 9px;margin:2px 4px 0 0;border-radius:999px;background:rgba(105,97,250,.15);color:#9b93ff;font-size:11px;font-weight:700">' + esc(moduleLabel(id)) + '</span>';
+            }).join('')
+          : '<span style="color:#ff8c8c">Ruxsat yo‘q</span>');
+      var overlay = document.createElement('div');
+      overlay.id = 'srEmployeeDetails';
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;background:rgba(5,9,18,.6)';
+      overlay.innerHTML =
+        '<div style="width:min(420px,92vw);padding:20px;border-radius:16px;border:1px solid rgba(255,255,255,.14);background:#0d1628;color:#e8eef9;font:13px -apple-system,\'Segoe UI\',sans-serif;box-shadow:0 24px 70px rgba(0,0,0,.5)">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">' +
+            '<div><div style="font-size:16px;font-weight:800">' + esc(user.fullName || user.username) + '</div>' +
+            '<div style="color:#8ea0bd;font-size:12px;margin-top:2px">Login: <span style="font-family:monospace">' + esc(user.username) + '</span></div></div>' +
+            '<button id="srEmployeeDetailsX" style="border:0;background:none;color:#8ea0bd;font-size:18px;cursor:pointer;line-height:1">✕</button>' +
+          '</div>' +
+          '<div style="display:grid;gap:12px">' +
+            '<div><div style="color:#8ea0bd;font-size:11px;margin-bottom:4px">Holat</div>' +
+              (user.active ? '<span style="color:#5fd98c;font-weight:700">Faol</span>' : '<span style="color:#ff8c8c;font-weight:700">Bloklangan</span>') + '</div>' +
+            '<div><div style="color:#8ea0bd;font-size:11px;margin-bottom:4px">Ruxsat berilgan bo‘limlar</div><div>' + chips + '</div></div>' +
+            '<div><div style="color:#8ea0bd;font-size:11px;margin-bottom:4px">Oxirgi kirish</div>' + (user.lastSignInAt ? esc(new Date(user.lastSignInAt).toLocaleString()) : 'Hali kirmagan') + '</div>' +
+            '<div><div style="color:#8ea0bd;font-size:11px;margin-bottom:4px">Yaratilgan</div>' + (user.createdAt ? esc(new Date(user.createdAt).toLocaleString()) : '—') + '</div>' +
+          '</div>' +
+          '<div style="display:flex;gap:8px;margin-top:18px">' +
+            (isAdmin ? '' : '<button id="srEmployeeDetailsEdit" style="flex:1;height:36px;border:0;border-radius:9px;background:linear-gradient(105deg,#6961fa,#3686ef);color:#fff;font-weight:700;cursor:pointer">Tahrirlash</button>') +
+            '<button id="srEmployeeDetailsClose" style="flex:1;height:36px;border:1px solid rgba(255,255,255,.18);border-radius:9px;background:transparent;color:#c8d5ea;font-weight:700;cursor:pointer">Yopish</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', function (event) { if (event.target === overlay) closeEmployeeDetails(); });
+      var closeX = document.getElementById('srEmployeeDetailsX');
+      var closeBtn = document.getElementById('srEmployeeDetailsClose');
+      if (closeX) closeX.onclick = closeEmployeeDetails;
+      if (closeBtn) closeBtn.onclick = closeEmployeeDetails;
+      var editBtn = document.getElementById('srEmployeeDetailsEdit');
+      if (editBtn) editBtn.onclick = function () {
+        closeEmployeeDetails();
+        if (typeof authOpenUserModal === 'function') authOpenUserModal(user.id);
       };
     }
 
@@ -269,6 +339,21 @@
         window.setTimeout(reconcile, 30);
       }
     }, true);
+
+    // Clicking a row (not its action buttons) opens a read-only details
+    // view. Row order in the table always matches authGetUsers() order,
+    // since authRenderUserTable() builds it straight from that array.
+    document.addEventListener('click', function (event) {
+      var target = event.target;
+      if (!target || !target.closest) return;
+      if (target.closest('button, a')) return;
+      var row = target.closest('#authUsersTable tbody tr');
+      if (!row || !row.parentNode) return;
+      var rows = Array.prototype.slice.call(row.parentNode.children);
+      var users = typeof authGetUsers === 'function' ? authGetUsers() : [];
+      var user = users[rows.indexOf(row)];
+      if (user) showEmployeeDetails(user);
+    });
 
     installedReconcile = reconcile;
     return reconcile;

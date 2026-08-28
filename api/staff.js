@@ -111,7 +111,8 @@ async function listStaff(ownerId) {
       name: profile.username || '',
       active: profile.active !== false,
       erp_modules: Array.isArray(profile.erp_modules) ? profile.erp_modules : [],
-      last_sign_in_at: authUser.last_sign_in_at || ''
+      last_sign_in_at: authUser.last_sign_in_at || '',
+      created_at: authUser.created_at || ''
     };
   }).sort((a, b) => a.login.localeCompare(b.login));
 }
