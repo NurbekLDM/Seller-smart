@@ -87,6 +87,7 @@ if (!erpHeadMatch) throw new Error('ERP HTML is missing a <head> tag.');
 const erpBlock = '\n<!-- SR_ERP_PAGE_BEGIN -->\n' +
   '<script src="assets/app-config.js"></script>\n' +
   '<script src="assets/vendor/supabase.js"></script>\n' +
+  '<script src="assets/staff-bridge.js"></script>\n' +
   '<script src="assets/erp-page.js"></script>\n' +
   '<script src="assets/version-check.js"></script>\n' +
   '<style id="srBootAuthHide">body.auth-locked{visibility:hidden!important}</style>\n' +

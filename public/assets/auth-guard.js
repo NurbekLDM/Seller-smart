@@ -354,7 +354,23 @@
       'setTimeout(function(){clearInterval(poll);gone();' +
       'var hide=document.getElementById("srBootAuthHide");' +
       'if(hide&&document.body&&document.body.classList.contains("auth-locked"))hide.parentNode.removeChild(hide);},5000);' +
-      '})();<\/script>';
+      '})();<\/script>' +
+      // Employee-management bridge: the ERP's Employees screen must create
+      // REAL accounts via /api/staff (through the parent/opener session),
+      // not the vendor's browser-only users list. Absolute URL, because
+      // the popup runs from a blob: URL where relative paths don't resolve.
+      '<script src="' + window.location.origin + '/assets/staff-bridge.js"><\/script>' +
+      // Fail CLOSED if that script never loaded (404 mid-deploy, offline,
+      // content blocker): the vendor's own save would otherwise still be
+      // live and would report success while writing a browser-only
+      // account that can never log in. Deferred a tick past DOMContentLoaded
+      // so the bridge's own installer always wins when it is present.
+      '<script>(function(){function guard(){if(window.__srEmployeeHookInstalled)return;' +
+      'var warn=function(){var m="Xodimlar moduli yuklanmadi \\u2014 sahifani yangilang.";' +
+      'try{showToast(m,"bi-x-circle text-danger")}catch(e){alert(m)}};' +
+      'window.authSaveUser=warn;window.authDeleteUser=warn;}' +
+      'if(document.readyState!=="loading")setTimeout(guard,0);' +
+      'else document.addEventListener("DOMContentLoaded",function(){setTimeout(guard,0)});})();<\/script>';
     var output = html.replace(/<head([^>]*)>/i, '<head$1>' + block);
     if (output === html) output = block + html;
     erpWrappedSource = html;

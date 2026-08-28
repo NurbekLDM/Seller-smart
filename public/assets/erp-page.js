@@ -131,232 +131,30 @@
     } catch (_) { /* storage unavailable */ }
   }
 
-  /* Owner-only: bridge the ERP's own native "Employees" screen (its
-     login+permissions modal already exists, built by the vendor) to real,
-     cross-device Supabase accounts instead of browser-only storage.
-     Returns the reconcile() function so the caller can decide WHEN to run
-     the first sync — it must not run concurrently with the initial
+  /* Owner-only: the employee-management bridge itself lives in the
+     shared assets/staff-bridge.js (the same ERP HTML also runs inside
+     the platform's iframe and popup, which load the bridge there). This
+     page passes its own client and drives the install/reconcile timing:
+     the first reconcile must not run concurrently with the initial
      app_state restore, or restore() can overwrite a just-applied prune
      with the still-stale server snapshot. */
-  var installedReconcile = null;
   function hookEmployeeManagement() {
-    if (window.__srEmployeeHookInstalled) return installedReconcile;
-    window.__srEmployeeHookInstalled = true;
-
-    try {
-      var style = document.createElement('style');
-      style.textContent = '#authUsersTable tbody tr{cursor:pointer}#authUsersTable tbody tr:hover{background:rgba(255,255,255,.04)}';
-      document.head.appendChild(style);
-    } catch (_) { /* cosmetic only */ }
-
-    function withSession() {
-      return client.auth.getSession().then(function (result) {
-        var current = result.data && result.data.session;
-        if (!current) throw new Error('Sessiya tugagan');
-        return current;
-      });
-    }
-    function apiRequest(method, body) {
-      return withSession().then(function (session) {
-        return fetch('/api/staff', {
-          method: method,
-          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + session.access_token },
-          body: body ? JSON.stringify(body) : undefined
-        }).then(function (response) {
-          return response.json().catch(function () { return {}; }).then(function (payload) {
-            if (!response.ok) throw new Error(payload.error || ('HTTP ' + response.status));
-            return payload;
-          });
-        });
-      });
-    }
-
-    function toLocalRecord(member) {
-      var perms = Array.isArray(member.erp_modules) && member.erp_modules.length ? member.erp_modules : ['pos'];
-      return {
-        id: member.id,
-        username: member.login,
-        password: '',
-        fullName: member.name || member.login,
-        role: 'CUSTOM',
-        permissions: perms,
-        landing: perms[0],
-        active: member.active,
-        protected: false,
-        createdAt: member.created_at || new Date().toISOString(),
-        lastSignInAt: member.last_sign_in_at || ''
+    if (typeof window.smartRetailInstallStaffBridge !== 'function') {
+      // Fail CLOSED. Leaving the vendor's handlers in place would let the
+      // Employees screen report success while writing a browser-only
+      // account that can never log in — the exact bug this bridge fixes.
+      console.warn('Staff bridge script is missing.');
+      var unavailable = function () {
+        var message = 'Xodimlar moduli yuklanmadi — sahifani yangilang.';
+        try { showToast(message, 'bi-x-circle text-danger'); } catch (_) { window.alert(message); }
       };
+      window.authSaveUser = unavailable;
+      window.authDeleteUser = unavailable;
+      return null;
     }
-
-    function esc(value) {
-      return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
-        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
-      });
-    }
-    function moduleLabel(id) {
-      try { if (typeof authV12ViewLabel === 'function') return authV12ViewLabel(id); } catch (_) { /* ignore */ }
-      return id;
-    }
-
-    // Read-only details view for one row — the vendor's own "edit" modal
-    // is for changing login/permissions, not for glancing at status/last
-    // sign-in, so this is a separate, lighter overlay.
-    function closeEmployeeDetails() {
-      var existing = document.getElementById('srEmployeeDetails');
-      if (existing) existing.remove();
-    }
-    function showEmployeeDetails(user) {
-      closeEmployeeDetails();
-      var isAdmin = user.role === 'ADMIN' || user.protected;
-      var modules = Array.isArray(user.permissions) ? user.permissions : [];
-      var chips = isAdmin
-        ? '<span style="color:#5fd98c;font-weight:700">Barcha bo‘limlar</span>'
-        : (modules.length
-          ? modules.map(function (id) {
-              return '<span style="display:inline-flex;padding:3px 9px;margin:2px 4px 0 0;border-radius:999px;background:rgba(105,97,250,.15);color:#9b93ff;font-size:11px;font-weight:700">' + esc(moduleLabel(id)) + '</span>';
-            }).join('')
-          : '<span style="color:#ff8c8c">Ruxsat yo‘q</span>');
-      var overlay = document.createElement('div');
-      overlay.id = 'srEmployeeDetails';
-      overlay.style.cssText = 'position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;background:rgba(5,9,18,.6)';
-      overlay.innerHTML =
-        '<div style="width:min(420px,92vw);padding:20px;border-radius:16px;border:1px solid rgba(255,255,255,.14);background:#0d1628;color:#e8eef9;font:13px -apple-system,\'Segoe UI\',sans-serif;box-shadow:0 24px 70px rgba(0,0,0,.5)">' +
-          '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">' +
-            '<div><div style="font-size:16px;font-weight:800">' + esc(user.fullName || user.username) + '</div>' +
-            '<div style="color:#8ea0bd;font-size:12px;margin-top:2px">Login: <span style="font-family:monospace">' + esc(user.username) + '</span></div></div>' +
-            '<button id="srEmployeeDetailsX" style="border:0;background:none;color:#8ea0bd;font-size:18px;cursor:pointer;line-height:1">✕</button>' +
-          '</div>' +
-          '<div style="display:grid;gap:12px">' +
-            '<div><div style="color:#8ea0bd;font-size:11px;margin-bottom:4px">Holat</div>' +
-              (user.active ? '<span style="color:#5fd98c;font-weight:700">Faol</span>' : '<span style="color:#ff8c8c;font-weight:700">Bloklangan</span>') + '</div>' +
-            '<div><div style="color:#8ea0bd;font-size:11px;margin-bottom:4px">Ruxsat berilgan bo‘limlar</div><div>' + chips + '</div></div>' +
-            '<div><div style="color:#8ea0bd;font-size:11px;margin-bottom:4px">Oxirgi kirish</div>' + (user.lastSignInAt ? esc(new Date(user.lastSignInAt).toLocaleString()) : 'Hali kirmagan') + '</div>' +
-            '<div><div style="color:#8ea0bd;font-size:11px;margin-bottom:4px">Yaratilgan</div>' + (user.createdAt ? esc(new Date(user.createdAt).toLocaleString()) : '—') + '</div>' +
-          '</div>' +
-          '<div style="display:flex;gap:8px;margin-top:18px">' +
-            (isAdmin ? '' : '<button id="srEmployeeDetailsEdit" style="flex:1;height:36px;border:0;border-radius:9px;background:linear-gradient(105deg,#6961fa,#3686ef);color:#fff;font-weight:700;cursor:pointer">Tahrirlash</button>') +
-            '<button id="srEmployeeDetailsClose" style="flex:1;height:36px;border:1px solid rgba(255,255,255,.18);border-radius:9px;background:transparent;color:#c8d5ea;font-weight:700;cursor:pointer">Yopish</button>' +
-          '</div>' +
-        '</div>';
-      document.body.appendChild(overlay);
-      overlay.addEventListener('click', function (event) { if (event.target === overlay) closeEmployeeDetails(); });
-      var closeX = document.getElementById('srEmployeeDetailsX');
-      var closeBtn = document.getElementById('srEmployeeDetailsClose');
-      if (closeX) closeX.onclick = closeEmployeeDetails;
-      if (closeBtn) closeBtn.onclick = closeEmployeeDetails;
-      var editBtn = document.getElementById('srEmployeeDetailsEdit');
-      if (editBtn) editBtn.onclick = function () {
-        closeEmployeeDetails();
-        if (typeof authOpenUserModal === 'function') authOpenUserModal(user.id);
-      };
-    }
-
-    // The vendor's sales-tracking "Xodimlar" table (DB_KEYS.employees) has
-    // no delete button of its own — it is only ever a mirror, kept by
-    // authUserId, of the login accounts that exist. Drop rows whose login
-    // no longer exists (deleted staff, or old local-only test accounts
-    // created before this bridge existed and never had a real backend).
-    function pruneOperationalEmployees(validIds) {
-      try {
-        if (typeof db_get !== 'function' || typeof db_set !== 'function' || typeof DB_KEYS === 'undefined' || !DB_KEYS.employees) return;
-        var rows = db_get(DB_KEYS.employees);
-        if (!Array.isArray(rows)) return;
-        var pruned = rows.filter(function (row) { return !row.authUserId || validIds.has(row.authUserId); });
-        if (pruned.length !== rows.length) {
-          db_set(DB_KEYS.employees, pruned);
-          try { if (typeof renderEmployees === 'function') renderEmployees(); } catch (_) { /* ignore */ }
-        }
-      } catch (_) { /* best-effort cleanup */ }
-    }
-
-    function reconcile() {
-      return apiRequest('GET').then(function (data) {
-        var staff = data.staff || [];
-        var kept = (typeof authGetUsers === 'function' ? authGetUsers() : [])
-          .filter(function (u) { return u.protected || u.role === 'ADMIN'; });
-        staff.forEach(function (member) { kept.push(toLocalRecord(member)); });
-        if (typeof authSetUsers === 'function') authSetUsers(kept);
-        try { authRenderUserTable(); } catch (_) { /* not rendered yet */ }
-        try { if (typeof renderEmployees === 'function') renderEmployees(); } catch (_) { /* ignore */ }
-        pruneOperationalEmployees(new Set(kept.map(function (u) { return u.id; })));
-      }).catch(function (error) { console.warn('Staff list unavailable:', error.message); });
-    }
-
-    window.authSaveUser = function () {
-      var id = document.getElementById('authUserId').value;
-      var fullName = document.getElementById('authUserFullName').value.trim();
-      var login = document.getElementById('authUserUsername').value.trim().toLowerCase();
-      var password = document.getElementById('authUserPassword').value;
-      var active = document.getElementById('authUserActive').checked;
-      var permissions = (typeof authV12SelectedPermissions === 'function') ? authV12SelectedPermissions() : [];
-      if (!fullName || !login) { showToast('Xodim ismi va loginni kiriting', 'bi-x-circle text-danger'); return; }
-      if (!permissions.length) { showToast('Kamida bitta bo‘limga ruxsat bering', 'bi-x-circle text-danger'); return; }
-      if (!id && !password) { showToast('Yangi xodim uchun parol kiriting', 'bi-x-circle text-danger'); return; }
-      if (password && password.length < 8) { showToast('Parol kamida 8 belgidan iborat bo‘lishi kerak', 'bi-x-circle text-danger'); return; }
-      var body = id
-        ? { action: 'update', id: id, name: fullName, active: active, modules: permissions }
-        : { action: 'create', login: login, name: fullName, password: password, modules: permissions };
-      if (id && password) body.password = password;
-      apiRequest('POST', body).then(function () {
-        try { bootstrap.Modal.getInstance(document.getElementById('modalAuthUser'))?.hide(); } catch (_) { /* ignore */ }
-        showToast(id ? 'Xodim yangilandi' : 'Yangi xodim yaratildi');
-        return reconcile();
-      }).catch(function (error) {
-        showToast(error.message || 'Xatolik yuz berdi', 'bi-x-circle text-danger');
-      });
-    };
-
-    window.authDeleteUser = function (id) {
-      var users = typeof authGetUsers === 'function' ? authGetUsers() : [];
-      var user = users.find(function (u) { return u.id === id; });
-      if (!user || user.protected) { showToast('Asosiy administratorni o‘chirib bo‘lmaydi', 'bi-shield-lock text-danger'); return; }
-      if (!window.confirm((user.fullName || user.username) + ' loginini o‘chirasizmi?')) return;
-      apiRequest('POST', { action: 'delete', id: id }).then(function () {
-        showToast('Xodim o‘chirildi', 'bi-trash text-danger');
-        return reconcile();
-      }).catch(function (error) {
-        showToast(error.message || 'Xatolik yuz berdi', 'bi-x-circle text-danger');
-      });
-    };
-
-    // The login (== the account's real email prefix) cannot be renamed
-    // from here — only the display name and permissions can.
-    var baseOpenModal = window.authOpenUserModal;
-    if (typeof baseOpenModal === 'function') {
-      window.authOpenUserModal = function (id) {
-        baseOpenModal(id || '');
-        if (id) {
-          var usernameEl = document.getElementById('authUserUsername');
-          if (usernameEl) usernameEl.disabled = true;
-        }
-      };
-    }
-
-    document.addEventListener('click', function (event) {
-      var target = event.target;
-      if (!target || !target.closest) return;
-      if (target.closest('[data-view="employees"], [data-view-link="employees"], [data-bn="employees"]')) {
-        window.setTimeout(reconcile, 30);
-      }
-    }, true);
-
-    // Clicking a row (not its action buttons) opens a read-only details
-    // view. Row order in the table always matches authGetUsers() order,
-    // since authRenderUserTable() builds it straight from that array.
-    document.addEventListener('click', function (event) {
-      var target = event.target;
-      if (!target || !target.closest) return;
-      if (target.closest('button, a')) return;
-      var row = target.closest('#authUsersTable tbody tr');
-      if (!row || !row.parentNode) return;
-      var rows = Array.prototype.slice.call(row.parentNode.children);
-      var users = typeof authGetUsers === 'function' ? authGetUsers() : [];
-      var user = users[rows.indexOf(row)];
-      if (user) showEmployeeDetails(user);
+    return window.smartRetailInstallStaffBridge(function () {
+      return { client: client, origin: window.location.origin, syncReady: syncActive };
     });
-
-    installedReconcile = reconcile;
-    return reconcile;
   }
 
   function tryUnlock() {
