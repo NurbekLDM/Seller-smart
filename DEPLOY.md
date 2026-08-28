@@ -34,10 +34,25 @@ Production architecture:
 5. Copy from **Project Settings → API**: the **Project URL** and the
    **anon / publishable key**.
 
-Data model: **every user is a fully isolated private workspace** (ERP +
-analytics, all features). No roles, no sharing — nobody, including other
-users, can read or write someone else's data (enforced by Row Level
-Security). Each workspace has its own automatic version history.
+Data model: **every owner account is a fully isolated private workspace**
+(ERP + analytics, all features) — no owner can read another owner's data
+(enforced by Row Level Security). Each workspace has automatic version
+history.
+
+**ERP staff**: an owner can create employee accounts from the "👥
+Xodimlar" panel in the platform. Staff log in on the same login page with
+a plain username (mapped internally to `<username>@staff.sellersmart.uz` —
+override the domain with the optional `STAFF_EMAIL_DOMAIN` env var, which
+must match `staffEmailDomain` in `public/assets/app-config.js`). Staff
+land on `/erp.html` (a standalone ERP page), see only POS Kassa +
+Inventarizatsiya, and work inside their owner's workspace. They cannot
+touch version history or any other workspace.
+
+**Validity periods**: accounts can be given an expiry (`expires_at`) from
+the admin dashboard (1 kun / 1 oy / 1 yil / custom) or per staff member
+from the Xodimlar panel; expired accounts are blocked at the database,
+API, and login layers.
+
 Deactivate a user without deleting their data:
 `update public.profiles set active = false where id = '...';`
 

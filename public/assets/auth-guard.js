@@ -233,13 +233,28 @@
 
   var storedSession = onLoginPage ? null : storedSessionInfo();
   if (storedSession) {
+    // ERP staff never use the platform: if this browser knows the signed-in
+    // user is staff, leave for the ERP page BEFORE seeding anything.
+    try {
+      var cachedRole = JSON.parse(localStorage.getItem('sr-erp-profile') || 'null');
+      if (cachedRole && cachedRole.id === storedSession.id && cachedRole.role === 'STAFF') {
+        window.location.replace('/erp.html');
+        storedSession = null;
+      }
+    } catch (_) { /* unreadable cache — the async check below still routes */ }
+  }
+  if (storedSession) {
     var localOwner = null;
     try { localOwner = localStorage.getItem(ACTIVE_USER_KEY); } catch (_) { /* ignore */ }
     if (localOwner !== storedSession.id) {
       wipeLocalStorageSync();
       try { indexedDB.deleteDatabase('uzum-analytics-pro'); } catch (_) { /* ignore */ }
-      try { localStorage.removeItem(USERNAME_CACHE_KEY); } catch (_) { /* ignore */ }
-      try { localStorage.setItem(ACTIVE_USER_KEY, storedSession.id); } catch (_) { /* ignore */ }
+      try {
+        localStorage.removeItem(USERNAME_CACHE_KEY);
+        localStorage.removeItem('sr-ws-revision');
+        localStorage.removeItem('sr-conflict-backup');
+        localStorage.setItem(ACTIVE_USER_KEY, storedSession.id);
+      } catch (_) { /* ignore */ }
     }
     var cachedName = null;
     try { cachedName = localStorage.getItem(USERNAME_CACHE_KEY); } catch (_) { /* ignore */ }
@@ -275,6 +290,12 @@
     if (signingOut) return;
     signingOut = true;
     showLogoutOverlay();
+    // Kill auth material FIRST (synchronously): closing the tab mid-logout
+    // must never leave a usable session behind. The final flush still
+    // works — supabase-js keeps the session in memory.
+    setAuthCookie('', 0);
+    purgeSupabaseStorage();
+    clearInternalSession();
     // Give an unsent sync flush a short window so the last change is not
     // lost, but never block logout on a slow network.
     var pendingFlush = Promise.resolve();
@@ -290,8 +311,13 @@
       clearInternalSession();
       wipeLocalStorageSync();
       try { indexedDB.deleteDatabase('uzum-analytics-pro'); } catch (_) { /* ignore */ }
-      try { localStorage.removeItem(ACTIVE_USER_KEY); } catch (_) { /* ignore */ }
-      try { localStorage.removeItem(USERNAME_CACHE_KEY); } catch (_) { /* ignore */ }
+      try {
+        localStorage.removeItem(ACTIVE_USER_KEY);
+        localStorage.removeItem(USERNAME_CACHE_KEY);
+        localStorage.removeItem('sr-erp-profile');
+        localStorage.removeItem('sr-ws-revision');
+        localStorage.removeItem('sr-conflict-backup');
+      } catch (_) { /* ignore */ }
       purgeSupabaseStorage();
       setAuthCookie('', 0);
       window.location.replace('/login.html');
@@ -467,15 +493,46 @@
       });
     }
 
-    return client.from('profiles').select('active, username').eq('id', session.user.id).single()
+    return client.from('profiles').select('active, username, expires_at, erp_role, workspace_owner').eq('id', session.user.id).single()
       .then(function (profileResult) {
         var profile = profileResult.data;
-        if (!profile || !profile.active) {
+        if (!profile && profileResult.error) {
+          // Transient failure: fail closed for routing — if the cache says
+          // staff, go to the ERP page; otherwise keep the session as-is.
+          try {
+            var cached = JSON.parse(localStorage.getItem('sr-erp-profile') || 'null');
+            if (cached && cached.id === session.user.id && cached.role === 'STAFF') {
+              window.location.replace('/erp.html');
+              return new Promise(function () {});
+            }
+          } catch (_) { /* ignore */ }
+          return session;
+        }
+        var expired = profile && profile.expires_at && new Date(profile.expires_at).getTime() <= Date.now();
+        if (!profile || !profile.active || expired) {
           clearInternalSession();
-          return client.auth.signOut().then(function () { return session; });
+          return Promise.resolve(client.auth.signOut()).catch(function () {}).then(function () {
+            purgeSupabaseStorage();
+            setAuthCookie('', 0);
+            window.location.replace('/login.html');
+            return new Promise(function () {});
+          });
+        }
+        // ERP staff never use the platform; send them to their ERP page.
+        if (profile.workspace_owner || profile.erp_role === 'STAFF') {
+          try {
+            localStorage.setItem('sr-erp-profile', JSON.stringify({
+              id: session.user.id, role: 'STAFF', name: profile.username || session.user.email || ''
+            }));
+          } catch (_) { /* ignore */ }
+          window.location.replace('/erp.html');
+          return new Promise(function () {}); // page is navigating away
         }
         var displayName = profile.username || session.user.email || '';
-        try { localStorage.setItem(USERNAME_CACHE_KEY, displayName); } catch (_) { /* ignore */ }
+        try {
+          localStorage.setItem(USERNAME_CACHE_KEY, displayName);
+          localStorage.setItem('sr-erp-profile', JSON.stringify({ id: session.user.id, role: 'OWNER', name: displayName }));
+        } catch (_) { /* ignore */ }
         seedInternalSession(displayName); // refresh with the real name
         return session;
       })

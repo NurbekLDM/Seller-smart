@@ -5,7 +5,7 @@
    Vercel project settings. */
 
 export const config = {
-  matcher: ['/', '/index.html', '/admin', '/admin.html']
+  matcher: ['/', '/index.html', '/admin', '/admin.html', '/erp', '/erp.html']
 };
 
 export default async function middleware(request) {

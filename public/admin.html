@@ -44,6 +44,13 @@
   <script src="assets/auth-guard.js"></script>
 </head>
 <body>
+  <div id="bootSplash" style="position:fixed;inset:0;z-index:9999;display:grid;place-items:center;background:#091120;transition:opacity .3s ease">
+    <div style="text-align:center;color:#8ea0bd;font:600 14px -apple-system,'Segoe UI',sans-serif">
+      <div style="width:46px;height:46px;margin:0 auto 14px;border-radius:50%;border:3px solid rgba(120,110,255,.25);border-top-color:#786eff;animation:srSpin 1s linear infinite"></div>
+      Yuklanmoqda...
+    </div>
+  </div>
+  <style>@keyframes srSpin{to{transform:rotate(360deg)}}</style>
   <div class="wrap" id="app" style="display:none">
     <div class="top">
       <div>
@@ -60,6 +67,18 @@
         <input id="newUsername" type="text" placeholder="Ko‘rinadigan ism (ixtiyoriy)" maxlength="60">
         <input id="newPassword" type="text" placeholder="Parol (kamida 8 belgi)" maxlength="72" autocomplete="off">
         <button class="ghost" id="genBtn" type="button">Parol yaratish</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <select id="newExpiry" style="height:42px;padding:0 12px;border:1px solid rgba(255,255,255,.14);border-radius:10px;background:#101b30;color:#fff;font-size:13px;flex:1;min-width:170px">
+          <option value="">Muddat: cheksiz</option>
+          <option value="1">1 kun</option>
+          <option value="7">1 hafta</option>
+          <option value="30">1 oy</option>
+          <option value="90">3 oy</option>
+          <option value="365">1 yil</option>
+          <option value="custom">Boshqa sana...</option>
+        </select>
+        <input id="newExpiryDate" type="date" style="display:none">
         <button id="createBtn" type="button">Qo‘shish</button>
       </div>
       <div class="notice" id="notice"></div>
@@ -70,7 +89,7 @@
       <h2>Foydalanuvchilar <span class="muted" id="countLabel"></span></h2>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Email</th><th>Ism</th><th>Holat</th><th>Yaratilgan</th><th>Oxirgi kirish</th><th>Amallar</th></tr></thead>
+          <thead><tr><th>Email</th><th>Ism</th><th>Holat</th><th>Muddat</th><th>Oxirgi kirish</th><th>Amallar</th></tr></thead>
           <tbody id="rows"><tr><td colspan="6" class="muted">Yuklanmoqda...</td></tr></tbody>
         </table>
       </div>
@@ -93,6 +112,12 @@
       function el(id) { return document.getElementById(id); }
       function esc(value) { return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) { return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; }); }
       function fmtDate(value) { return value ? new Date(value).toLocaleString() : '—'; }
+      // Local calendar date (YYYY-MM-DD) of a stored timestamp — slicing the
+      // ISO string would show the UTC date and drift the expiry by a day.
+      function localDateString(iso) {
+        var d = new Date(iso);
+        return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+      }
 
       function generatePassword() {
         var alphabet = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -103,7 +128,15 @@
         return out;
       }
 
+      function hideSplash() {
+        var splash = el('bootSplash');
+        if (!splash) return;
+        splash.style.opacity = '0';
+        window.setTimeout(function () { if (splash.parentNode) splash.parentNode.removeChild(splash); }, 350);
+      }
+
       function showDenied(message) {
+        hideSplash();
         el('app').style.display = 'none';
         el('denied').style.display = 'block';
         if (message) el('deniedText').textContent = message;
@@ -134,12 +167,17 @@
         users.forEach(function (user) {
           var tr = document.createElement('tr');
           var isMe = me && user.id === me.id;
+          var expired = user.expires_at && new Date(user.expires_at).getTime() <= Date.now();
+          var expiryLabel = user.expires_at
+            ? (expired ? '<span class="badge off">Tugagan</span> ' : '') + new Date(user.expires_at).toLocaleDateString()
+            : '∞';
           tr.innerHTML =
-            '<td>' + esc(user.email) + (isMe ? ' <span class="muted">(siz)</span>' : '') + '</td>' +
+            '<td>' + esc(user.email) + (isMe ? ' <span class="muted">(siz)</span>' : '') +
+              (user.is_staff ? '<div class="muted">xodim · ' + esc(user.owner_email) + '</div>' : '') + '</td>' +
             '<td>' + esc(user.username || '—') + '</td>' +
             '<td><span class="badge ' + (user.active ? 'on">Faol' : 'off">Bloklangan') + '</span>' +
               (user.is_admin ? '<span class="badge adm">Admin</span>' : '') + '</td>' +
-            '<td class="muted">' + fmtDate(user.created_at) + '</td>' +
+            '<td class="muted">' + expiryLabel + '</td>' +
             '<td class="muted">' + fmtDate(user.last_sign_in_at) + '</td>' +
             '<td></td>';
           var actions = document.createElement('div');
@@ -168,6 +206,29 @@
           actions.appendChild(passwordButton);
 
           if (!isMe) {
+            var expiryButton = document.createElement('button');
+            expiryButton.className = 'small ghost';
+            expiryButton.textContent = 'Muddat';
+            expiryButton.onclick = function () {
+              var answer = window.prompt(
+                user.email + ' uchun amal qilish muddati:\n' +
+                '• kun soni (masalan: 30)\n• aniq sana (YYYY-MM-DD)\n• bo‘sh qoldiring = cheksiz',
+                user.expires_at ? localDateString(user.expires_at) : ''
+              );
+              if (answer === null) return;
+              var value = answer.trim();
+              var expiresAt = null;
+              if (value) {
+                if (/^\d+$/.test(value)) expiresAt = new Date(Date.now() + Number(value) * 86400000).toISOString();
+                else {
+                  var parsed = new Date(value + 'T23:59:59');
+                  if (Number.isNaN(parsed.getTime())) { window.alert('Sana tushunarsiz. Masalan: 30 yoki 2027-01-15'); return; }
+                  expiresAt = parsed.toISOString();
+                }
+              }
+              run(expiryButton, { action: 'update', id: user.id, expires_at: expiresAt });
+            };
+            actions.appendChild(expiryButton);
             var adminButton = document.createElement('button');
             adminButton.className = 'small ghost';
             adminButton.textContent = user.is_admin ? 'Adminlikdan olish' : 'Admin qilish';
@@ -216,6 +277,7 @@
         try {
           var data = await api('GET');
           me = data.me;
+          hideSplash();
           el('app').style.display = 'block';
           el('denied').style.display = 'none';
           renderRows(data.users || []);
@@ -223,7 +285,11 @@
         } catch (error) {
           if (error.status === 403 || error.status === 401) showDenied(error.message);
           else if (error.status === 500) showDenied(error.message);
-          else el('listError').textContent = error.message;
+          else {
+            hideSplash();
+            el('app').style.display = 'block';
+            el('listError').textContent = error.message;
+          }
         }
       }
 
@@ -238,6 +304,19 @@
       }
 
       el('genBtn').onclick = function () { el('newPassword').value = generatePassword(); };
+      el('newExpiry').onchange = function () {
+        el('newExpiryDate').style.display = this.value === 'custom' ? '' : 'none';
+      };
+      function chosenExpiry() {
+        var preset = el('newExpiry').value;
+        if (!preset) return null;
+        if (preset === 'custom') {
+          var date = el('newExpiryDate').value;
+          if (!date) return undefined; // custom chosen but no date picked
+          return new Date(date + 'T23:59:59').toISOString();
+        }
+        return new Date(Date.now() + Number(preset) * 86400000).toISOString();
+      }
       el('createBtn').onclick = function () {
         var email = el('newEmail').value.trim();
         var username = el('newUsername').value.trim();
@@ -245,9 +324,11 @@
         el('createError').textContent = '';
         if (!email) { el('createError').textContent = 'Email kiriting.'; return; }
         if (!password || password.length < 8) { el('createError').textContent = 'Parol kamida 8 belgi bo‘lsin (yoki "Parol yaratish" tugmasini bosing).'; return; }
+        var expiresAt = chosenExpiry();
+        if (expiresAt === undefined) { el('createError').textContent = 'Muddat uchun sanani tanlang.'; return; }
         var button = el('createBtn');
         button.disabled = true;
-        api('POST', { action: 'create', email: email, username: username, password: password }).then(function () {
+        api('POST', { action: 'create', email: email, username: username, password: password, expires_at: expiresAt }).then(function () {
           showNotice(esc(email) + ' yaratildi. Parol: <b>' + esc(password) + '</b> — hozir nusxalab foydalanuvchiga yuboring.');
           el('newEmail').value = ''; el('newUsername').value = ''; el('newPassword').value = '';
           return load();

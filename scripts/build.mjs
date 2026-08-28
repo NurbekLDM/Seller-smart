@@ -73,10 +73,43 @@ const bodyBlock = `\n${BODY_BEGIN}\n<script src="assets/supabase-sync.js"></scri
 html = html.slice(0, closingBody).replace(/\n+$/, '\n') + bodyBlock + html.slice(closingBody);
 
 writeFileSync(outputFile, html);
+
+// ---- standalone ERP page (public/erp.html) for ERP staff accounts ------
+// Decoded from the embedded payload; gets its own guard + workspace sync.
+const erpOutputFile = resolve(root, 'public/erp.html');
+const b64Match = html.match(/const SMART_RETAIL_ERP_B64 = "([^"]+)"/);
+if (!b64Match) throw new Error('Embedded ERP payload was not found in the app HTML.');
+let erpHtml = Buffer.from(b64Match[1], 'base64').toString('utf8');
+
+const erpHeadMatch = erpHtml.match(/<head[^>]*>/i);
+if (!erpHeadMatch) throw new Error('ERP HTML is missing a <head> tag.');
+const erpBlock = '\n<!-- SR_ERP_PAGE_BEGIN -->\n' +
+  '<script src="assets/app-config.js"></script>\n' +
+  '<script src="assets/vendor/supabase.js"></script>\n' +
+  '<script src="assets/erp-page.js"></script>\n' +
+  '<style id="srBootAuthHide">body.auth-locked{visibility:hidden!important}</style>\n' +
+  '<style>@keyframes srSpin{to{transform:rotate(360deg)}}</style>\n' +
+  '<script>(function(){var splash=document.createElement("div");splash.id="srErpBootSplash";' +
+  'splash.setAttribute("style","position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;background:#07111f;visibility:visible");' +
+  'splash.innerHTML=\'<div style="text-align:center;color:#8ea0bd;font:600 13px -apple-system,\\\'Segoe UI\\\',sans-serif">' +
+  '<div style="width:42px;height:42px;margin:0 auto 12px;border-radius:50%;border:3px solid rgba(120,110,255,.25);border-top-color:#786eff;animation:srSpin 1s linear infinite"></div>' +
+  'ERP yuklanmoqda...</div>\';document.documentElement.appendChild(splash);' +
+  'function gone(){if(splash&&splash.parentNode)splash.parentNode.removeChild(splash);splash=null;}' +
+  'function unlocked(){return document.body&&!document.body.classList.contains("auth-locked");}' +
+  'var poll=setInterval(function(){if(unlocked()){gone();clearInterval(poll);}},120);' +
+  'setTimeout(function(){clearInterval(poll);gone();var hide=document.getElementById("srBootAuthHide");' +
+  'if(hide&&document.body&&document.body.classList.contains("auth-locked"))hide.parentNode.removeChild(hide);},8000);' +
+  '})();<\/script>\n' +
+  '<!-- SR_ERP_PAGE_END -->\n';
+const erpHeadIndex = erpHeadMatch.index + erpHeadMatch[0].length;
+erpHtml = erpHtml.slice(0, erpHeadIndex) + erpBlock + erpHtml.slice(erpHeadIndex);
+writeFileSync(erpOutputFile, erpHtml);
+
 console.log(JSON.stringify({
   event: 'build_complete',
   output: 'public/index.html',
   bytes: Buffer.byteLength(html),
+  erpPageBytes: Buffer.byteLength(erpHtml),
   legacySyncRemoved: !html.includes('SMART_RETAIL_PARENT_SYNC_21_BEGIN'),
   authInjected: html.includes(HEAD_BEGIN),
   syncInjected: html.includes(BODY_BEGIN)

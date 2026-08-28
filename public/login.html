@@ -18,7 +18,7 @@
     <h1>Smart Retail ERP</h1>
     <p>Mijozlar bazasi, qarzdorlik va savdo tizimiga xavfsiz kirish. Barcha qurilmalar bitta bazada ishlaydi.</p>
     <form id="loginForm">
-      <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required autofocus maxlength="120"></div>
+      <div class="field"><label for="email">Email yoki xodim logini</label><input id="email" name="email" type="text" autocomplete="username" required autofocus maxlength="120"></div>
       <div class="field"><label for="password">Parol</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
       <button id="submitButton" type="submit">Tizimga kirish</button>
       <div id="error" class="error" role="alert"></div>
@@ -35,10 +35,16 @@
         return;
       }
 
-      // Already signed in? Go straight to the app.
+      // Already signed in? Go straight to the right app for the role.
       if (window.smartRetailAuthReady) {
         window.smartRetailAuthReady.then(function (session) {
-          if (session) window.location.replace('/');
+          if (!session) return;
+          var target = '/';
+          try {
+            var cached = JSON.parse(localStorage.getItem('sr-erp-profile') || 'null');
+            if (cached && cached.id === session.user.id && cached.role === 'STAFF') target = '/erp.html';
+          } catch (_) { /* ignore */ }
+          window.location.replace(target);
         });
       }
 
@@ -50,11 +56,16 @@
         errorBox.textContent = '';
         var email = document.getElementById('email').value.trim();
         var password = document.getElementById('password').value;
+        // ERP staff type a plain username; map it to the staff email domain.
+        if (email && email.indexOf('@') === -1) {
+          var staffDomain = (window.SMART_RETAIL_CONFIG && window.SMART_RETAIL_CONFIG.staffEmailDomain) || 'staff.sellersmart.uz';
+          email = email.toLowerCase() + '@' + staffDomain;
+        }
 
         client.auth.signInWithPassword({ email: email, password: password }).then(function (result) {
           if (result.error) throw new Error('Login yoki parol noto‘g‘ri.');
           var session = result.data.session;
-          return client.from('profiles').select('active, username').eq('id', session.user.id).single()
+          return client.from('profiles').select('active, username, expires_at, erp_role, workspace_owner').eq('id', session.user.id).single()
             .then(function (profileResult) {
               var profile = profileResult.data;
               if (!profile || !profile.active) {
@@ -62,14 +73,26 @@
                   throw new Error('Hisobingiz faol emas. Administratorga murojaat qiling.');
                 });
               }
-              // The auth guard on the app page handles workspace ownership
-              // and the legacy in-app session; cache the username so the
-              // first paint shows the right name.
-              try { localStorage.setItem('sr-username', profile.username || session.user.email || ''); } catch (_) {}
+              if (profile.expires_at && new Date(profile.expires_at).getTime() <= Date.now()) {
+                return client.auth.signOut().then(function () {
+                  throw new Error('Hisobingiz muddati tugagan. Administratorga murojaat qiling.');
+                });
+              }
+              var isStaff = Boolean(profile.workspace_owner) || profile.erp_role === 'STAFF';
+              // Cache identity so the next page can seed synchronously.
+              try {
+                localStorage.setItem('sr-username', profile.username || session.user.email || '');
+                localStorage.setItem('sr-erp-profile', JSON.stringify({
+                  id: session.user.id,
+                  role: isStaff ? 'STAFF' : 'OWNER',
+                  name: profile.username || session.user.email || ''
+                }));
+              } catch (_) {}
               if (window.smartRetailSetAuthCookie) {
                 window.smartRetailSetAuthCookie(session.access_token, 7 * 24 * 3600);
               }
-              window.location.replace('/');
+              // Staff use only the ERP; owners get the full platform.
+              window.location.replace(isStaff ? '/erp.html' : '/');
             });
         }).catch(function (problem) {
           errorBox.textContent = problem.message || 'Tizimga kirib bo‘lmadi.';

@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "check": "node --check scripts/build.mjs && node --check middleware.js && node --check public/assets/auth-guard.js && node --check public/assets/supabase-sync.js && node --check public/assets/app-config.js"
+    "check": "node --check scripts/build.mjs && node --check middleware.js && node --check public/assets/auth-guard.js && node --check public/assets/supabase-sync.js && node --check public/assets/app-config.js && node --check public/assets/erp-page.js && node --check api/admin/users.js && node --check api/staff.js"
   },
   "license": "UNLICENSED"
 }

@@ -73,6 +73,16 @@ create table if not exists public.profiles (
   created_at timestamptz not null default now()
 );
 
+-- v3 additions:
+--   expires_at      — account validity deadline (null = unlimited)
+--   workspace_owner — staff accounts point at the owner whose workspace
+--                     they work in (null = the account owns its workspace)
+--   erp_role        — 'STAFF' = ERP-only employee (POS + Inventarizatsiya);
+--                     null = full owner account
+alter table public.profiles add column if not exists expires_at timestamptz;
+alter table public.profiles add column if not exists workspace_owner uuid references auth.users (id) on delete cascade;
+alter table public.profiles add column if not exists erp_role text;
+
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
@@ -95,7 +105,8 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
--- True while the caller's account exists and is not deactivated.
+-- True while the caller's account exists, is not deactivated, has not
+-- expired, and (for staff) the workspace owner is also valid.
 create or replace function public.is_active_user()
 returns boolean
 language sql
@@ -103,7 +114,38 @@ security definer
 stable
 set search_path = public
 as $$
-  select coalesce((select active from public.profiles where id = auth.uid()), false);
+  select coalesce((
+    select p.active
+       and (p.expires_at is null or p.expires_at > now())
+       and (p.workspace_owner is null or exists (
+              select 1 from public.profiles o
+              where o.id = p.workspace_owner
+                and o.active
+                and (o.expires_at is null or o.expires_at > now())))
+    from public.profiles p where p.id = auth.uid()
+  ), false);
+$$;
+
+-- The workspace the caller works in: their own, or their owner's (staff).
+create or replace function public.workspace_of()
+returns uuid
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select coalesce(workspace_owner, id) from public.profiles where id = auth.uid();
+$$;
+
+-- True only for accounts that own their workspace (not ERP staff).
+create or replace function public.is_workspace_owner()
+returns boolean
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select coalesce((select workspace_owner is null from public.profiles where id = auth.uid()), false);
 $$;
 
 alter table public.profiles enable row level security;
@@ -142,11 +184,12 @@ create table if not exists public.app_state (
 
 alter table public.app_state enable row level security;
 
--- Users read only their own workspace; writes go through save_app_state().
+-- Members read only their workspace (owners their own, staff their
+-- owner's); writes go through save_app_state().
 drop policy if exists app_state_select_own on public.app_state;
 create policy app_state_select_own on public.app_state
   for select to authenticated
-  using (user_id = auth.uid() and public.is_active_user());
+  using (user_id = public.workspace_of() and public.is_active_user());
 
 -- --------------------------------------------------- version history ------
 
@@ -175,7 +218,7 @@ security definer
 set search_path = public
 as $$
 declare
-  uid uuid := auth.uid();
+  uid uuid := public.workspace_of();
   new_version bigint;
 begin
   if uid is null or not public.is_active_user() then
@@ -222,7 +265,7 @@ security definer
 set search_path = public
 as $$
 begin
-  if not public.is_active_user() then
+  if not (public.is_active_user() and public.is_workspace_owner()) then
     raise exception 'forbidden' using errcode = '42501';
   end if;
   return query
@@ -244,7 +287,7 @@ as $$
 declare
   new_id bigint;
 begin
-  if not public.is_active_user() then
+  if not (public.is_active_user() and public.is_workspace_owner()) then
     raise exception 'forbidden' using errcode = '42501';
   end if;
   insert into public.app_state_history (user_id, version, snapshot, label)
@@ -271,7 +314,7 @@ declare
   target record;
   new_version bigint;
 begin
-  if uid is null or not public.is_active_user() then
+  if uid is null or not (public.is_active_user() and public.is_workspace_owner()) then
     raise exception 'forbidden' using errcode = '42501';
   end if;
   select * into target from public.app_state_history where id = history_id and user_id = uid;
@@ -299,7 +342,7 @@ security definer
 set search_path = public
 as $$
 begin
-  if not public.is_active_user() then
+  if not (public.is_active_user() and public.is_workspace_owner()) then
     raise exception 'forbidden' using errcode = '42501';
   end if;
   delete from public.app_state_history where id = history_id and user_id = auth.uid();
@@ -308,6 +351,10 @@ $$;
 
 revoke all on function public.is_active_user() from public, anon;
 grant execute on function public.is_active_user() to authenticated;
+revoke all on function public.workspace_of() from public, anon;
+grant execute on function public.workspace_of() to authenticated;
+revoke all on function public.is_workspace_owner() from public, anon;
+grant execute on function public.is_workspace_owner() to authenticated;
 revoke all on function public.save_app_state(bigint, jsonb) from public, anon;
 grant execute on function public.save_app_state(bigint, jsonb) to authenticated;
 revoke all on function public.list_app_state_versions() from public, anon;

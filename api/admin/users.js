@@ -36,7 +36,8 @@ function callerToken(req) {
   if (header.startsWith('Bearer ')) return header.slice(7);
   const cookies = String(req.headers.cookie || '');
   const match = cookies.match(/(?:^|;\s*)sr-access-token=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : '';
+  if (!match) return '';
+  try { return decodeURIComponent(match[1]); } catch (_) { return ''; }
 }
 
 async function authenticate(req) {
@@ -54,23 +55,28 @@ async function authenticate(req) {
   }
 }
 
-// Admin = row in public.admins AND an active profile.
+function notExpired(profile) {
+  return !profile.expires_at || new Date(profile.expires_at).getTime() > Date.now();
+}
+
+// Admin = row in public.admins AND an active, unexpired profile.
 async function isAdmin(userId) {
   const [admins, profiles] = await Promise.all([
     readJson(await fetch(`${SUPABASE_URL}/rest/v1/admins?select=user_id&user_id=eq.${encodeURIComponent(userId)}`, { headers: serviceHeaders })),
-    readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?select=active&id=eq.${encodeURIComponent(userId)}`, { headers: serviceHeaders }))
+    readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?select=active,expires_at&id=eq.${encodeURIComponent(userId)}`, { headers: serviceHeaders }))
   ]);
-  return admins.length > 0 && profiles.length > 0 && profiles[0].active !== false;
+  return admins.length > 0 && profiles.length > 0 && profiles[0].active !== false && notExpired(profiles[0]);
 }
 
 async function listUsers() {
   const [authData, profiles, admins] = await Promise.all([
     readJson(await fetch(`${SUPABASE_URL}/auth/v1/admin/users?per_page=1000`, { headers: serviceHeaders })),
-    readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?select=id,username,active`, { headers: serviceHeaders })),
+    readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?select=id,username,active,expires_at,workspace_owner,erp_role`, { headers: serviceHeaders })),
     readJson(await fetch(`${SUPABASE_URL}/rest/v1/admins?select=user_id`, { headers: serviceHeaders }))
   ]);
   const authUsers = Array.isArray(authData) ? authData : (authData.users || []);
   const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
+  const emailById = new Map(authUsers.map((user) => [user.id, user.email || '']));
   const adminIds = new Set(admins.map((row) => row.user_id));
   return authUsers.map((user) => {
     const profile = profileById.get(user.id) || {};
@@ -80,10 +86,22 @@ async function listUsers() {
       username: profile.username || '',
       active: profile.active !== false,
       is_admin: adminIds.has(user.id),
+      expires_at: profile.expires_at || null,
+      is_staff: Boolean(profile.workspace_owner),
+      owner_email: profile.workspace_owner ? (emailById.get(profile.workspace_owner) || '') : '',
       created_at: user.created_at || '',
       last_sign_in_at: user.last_sign_in_at || ''
     };
   }).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+}
+
+function parseExpiry(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const time = new Date(value).getTime();
+  if (Number.isNaN(time)) {
+    throw Object.assign(new Error('Muddat sanasi noto‘g‘ri.'), { status: 400 });
+  }
+  return new Date(time).toISOString();
 }
 
 function validEmail(value) {
@@ -101,6 +119,7 @@ function cleanUsername(value) {
 async function createUser(body) {
   if (!validEmail(body.email)) throw Object.assign(new Error('Email noto‘g‘ri.'), { status: 400 });
   if (!validPassword(body.password)) throw Object.assign(new Error('Parol kamida 8 belgidan iborat bo‘lishi kerak.'), { status: 400 });
+  const expiresAt = parseExpiry(body.expires_at);
   const created = await readJson(await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
     method: 'POST',
     headers: serviceHeaders,
@@ -111,6 +130,13 @@ async function createUser(body) {
       user_metadata: { username: cleanUsername(body.username) }
     })
   }));
+  if (expiresAt) {
+    await readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${encodeURIComponent(created.id)}`, {
+      method: 'PATCH',
+      headers: { ...serviceHeaders, prefer: 'return=minimal' },
+      body: JSON.stringify({ expires_at: expiresAt })
+    }));
+  }
   return { id: created.id, email: created.email };
 }
 
@@ -119,6 +145,12 @@ async function updateProfile(callerId, body) {
   if (!id) throw Object.assign(new Error('Foydalanuvchi tanlanmagan.'), { status: 400 });
   const patch = {};
   if (typeof body.username === 'string') patch.username = cleanUsername(body.username);
+  if ('expires_at' in body) {
+    if (id === callerId) {
+      throw Object.assign(new Error('O‘z hisobingiz muddatini bu yerdan o‘zgartira olmaysiz.'), { status: 400 });
+    }
+    patch.expires_at = parseExpiry(body.expires_at);
+  }
   if (typeof body.active === 'boolean') {
     if (id === callerId && body.active === false) {
       throw Object.assign(new Error('O‘zingizni o‘chira olmaysiz.'), { status: 400 });
@@ -150,6 +182,19 @@ async function deleteUser(callerId, body) {
   const id = String(body.id || '');
   if (!id) throw Object.assign(new Error('Foydalanuvchi tanlanmagan.'), { status: 400 });
   if (id === callerId) throw Object.assign(new Error('O‘zingizni o‘chira olmaysiz.'), { status: 400 });
+  // Deleting a workspace owner also deletes their ERP staff accounts, so
+  // no orphaned staff logins survive without a profile.
+  const staff = await readJson(await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?select=id&workspace_owner=eq.${encodeURIComponent(id)}`,
+    { headers: serviceHeaders }
+  ));
+  for (const member of staff) {
+    if (member.id === callerId) continue;
+    await readJson(await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${encodeURIComponent(member.id)}`, {
+      method: 'DELETE',
+      headers: serviceHeaders
+    }));
+  }
   await readJson(await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${encodeURIComponent(id)}`, {
     method: 'DELETE',
     headers: serviceHeaders
