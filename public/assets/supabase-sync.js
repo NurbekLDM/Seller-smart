@@ -295,6 +295,12 @@
 
       var profileResult = await client().from('profiles').select('active, username, workspace_owner').eq('id', session.user.id).single();
       var profile = profileResult.data;
+      if (!profile && profileResult.error) {
+        // A failed lookup is not the same as a blocked account — never
+        // sign the user out over a transient read failure.
+        announce('error', 'Bazaga ulanib bo‘lmadi');
+        return;
+      }
       if (!profile || !profile.active) {
         announce('error', 'Hisob faol emas');
         await client().auth.signOut();

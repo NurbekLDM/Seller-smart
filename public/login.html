@@ -68,6 +68,11 @@
           return client.from('profiles').select('active, username, expires_at, erp_role, workspace_owner, erp_modules').eq('id', session.user.id).single()
             .then(function (profileResult) {
               var profile = profileResult.data;
+              if (!profile && profileResult.error) {
+                // A failed lookup is not the same as a blocked account —
+                // do not sign the user out or claim their account is inactive.
+                throw new Error('Ma’lumotlar bazasiga ulanib bo‘lmadi. Birozdan so‘ng qayta urinib ko‘ring.');
+              }
               if (!profile || !profile.active) {
                 return client.auth.signOut().then(function () {
                   throw new Error('Hisobingiz faol emas. Administratorga murojaat qiling.');

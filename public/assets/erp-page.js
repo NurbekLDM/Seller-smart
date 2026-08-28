@@ -535,11 +535,25 @@
       }
     });
 
-    return client.from('profiles')
-      .select('username, active, expires_at, erp_role, workspace_owner, erp_modules')
-      .eq('id', session.user.id).single()
-      .then(function (profileResult) {
-        var profile = profileResult.data;
+    // A failed lookup (network blip, RLS hiccup) is NOT the same as a
+    // blocked account — only a successful read saying active=false (or
+    // expired) may ever sign the user out. Retries with backoff instead.
+    function fetchProfile(attempt) {
+      return client.from('profiles')
+        .select('username, active, expires_at, erp_role, workspace_owner, erp_modules')
+        .eq('id', session.user.id).single()
+        .then(function (profileResult) {
+          if (!profileResult.data && profileResult.error) {
+            var wait = Math.min(30000, 3000 * Math.pow(2, Math.min(attempt, 4)));
+            return new Promise(function (resolve) { window.setTimeout(resolve, wait); })
+              .then(function () { return fetchProfile(attempt + 1); });
+          }
+          return profileResult.data;
+        });
+    }
+
+    return fetchProfile(0)
+      .then(function (profile) {
         var expired = profile && profile.expires_at && new Date(profile.expires_at).getTime() <= Date.now();
         if (!profile || !profile.active || expired) {
           signingOut = true;
