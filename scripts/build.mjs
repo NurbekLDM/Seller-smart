@@ -45,6 +45,7 @@ const headBlock = `\n${HEAD_BEGIN}\n` +
   '<script src="assets/app-config.js"></script>\n' +
   '<script src="assets/vendor/supabase.js"></script>\n' +
   '<script src="assets/auth-guard.js"></script>\n' +
+  '<script src="assets/version-check.js"></script>\n' +
   `${HEAD_END}\n`;
 const headIndex = headMatch.index + headMatch[0].length;
 html = html.slice(0, headIndex) + headBlock + html.slice(headIndex);
@@ -87,6 +88,7 @@ const erpBlock = '\n<!-- SR_ERP_PAGE_BEGIN -->\n' +
   '<script src="assets/app-config.js"></script>\n' +
   '<script src="assets/vendor/supabase.js"></script>\n' +
   '<script src="assets/erp-page.js"></script>\n' +
+  '<script src="assets/version-check.js"></script>\n' +
   '<style id="srBootAuthHide">body.auth-locked{visibility:hidden!important}</style>\n' +
   '<style>@keyframes srSpin{to{transform:rotate(360deg)}}</style>\n' +
   '<script>(function(){var splash=document.createElement("div");splash.id="srErpBootSplash";' +
@@ -105,11 +107,18 @@ const erpHeadIndex = erpHeadMatch.index + erpHeadMatch[0].length;
 erpHtml = erpHtml.slice(0, erpHeadIndex) + erpBlock + erpHtml.slice(erpHeadIndex);
 writeFileSync(erpOutputFile, erpHtml);
 
+// version.json: a tiny marker version-check.js polls so a tab left open
+// across a deploy gets prompted to refresh instead of silently running
+// stale code against the current backend contract.
+const buildVersion = Date.now().toString(36);
+writeFileSync(resolve(root, 'public/version.json'), JSON.stringify({ version: buildVersion }));
+
 console.log(JSON.stringify({
   event: 'build_complete',
   output: 'public/index.html',
   bytes: Buffer.byteLength(html),
   erpPageBytes: Buffer.byteLength(erpHtml),
+  buildVersion,
   legacySyncRemoved: !html.includes('SMART_RETAIL_PARENT_SYNC_21_BEGIN'),
   authInjected: html.includes(HEAD_BEGIN),
   syncInjected: html.includes(BODY_BEGIN)

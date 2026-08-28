@@ -19,7 +19,7 @@
       ]
     },
     {
-      "source": "/(index.html|login.html|admin.html|erp.html|)",
+      "source": "/(index.html|login.html|admin.html|erp.html|version.json|)",
       "headers": [
         { "key": "Cache-Control", "value": "private, no-cache" }
       ]
