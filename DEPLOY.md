@@ -39,19 +39,24 @@ Data model: **every owner account is a fully isolated private workspace**
 (enforced by Row Level Security). Each workspace has automatic version
 history.
 
-**ERP staff**: an owner can create employee accounts from the "👥
-Xodimlar" panel in the platform. Staff log in on the same login page with
-a plain username (mapped internally to `<username>@staff.sellersmart.uz` —
+**ERP staff**: an owner creates employee accounts from the ERP's own
+**Employees** screen (sidebar → Employees / Xodimlar) — the vendor's
+built-in "Tizim foydalanuvchilari" card and login+permissions modal are
+bridged (`public/assets/erp-page.js`, `hookEmployeeManagement`) to real
+Supabase accounts instead of browser-only storage. The owner picks a
+login, password and a checklist of ERP sections (POS, Inventarizatsiya,
+CRM, etc.) per employee. Staff log in on the same login page with a plain
+username (mapped internally to `<username>@staff.sellersmart.uz` —
 override the domain with the optional `STAFF_EMAIL_DOMAIN` env var, which
 must match `staffEmailDomain` in `public/assets/app-config.js`). Staff
-land on `/erp.html` (a standalone ERP page), see only POS Kassa +
-Inventarizatsiya, and work inside their owner's workspace. They cannot
-touch version history or any other workspace.
+land on `/erp.html` (a standalone ERP page) with only the granted sections
+visible in the menu, and work inside their owner's workspace. They cannot
+touch version history, other owners' data, or the Employees screen.
+Employee accounts never expire (no `expires_at`) — only `active`/blocked.
 
-**Validity periods**: accounts can be given an expiry (`expires_at`) from
-the admin dashboard (1 kun / 1 oy / 1 yil / custom) or per staff member
-from the Xodimlar panel; expired accounts are blocked at the database,
-API, and login layers.
+**Validity periods**: full owner accounts can be given an expiry
+(`expires_at`) from the `/admin` dashboard (1 kun / 1 oy / 1 yil / custom);
+expired accounts are blocked at the database, API, and login layers.
 
 Deactivate a user without deleting their data:
 `update public.profiles set active = false where id = '...';`

@@ -83,8 +83,11 @@
 
   /* Seed the ERP's internal auth: first-run markers (so the store reset
      never fires), the v23 access token, a users-list entry matching the
-     account's role, and the per-tab session id. */
-  function seedErpAuth(role, name, uid) {
+     account's role/permissions, and the per-tab session id. The ERP's own
+     v12 permission layer (see erp.html) grants access strictly from the
+     seeded entry's `permissions` array, so a staff account only ever sees
+     the sections the owner granted via the Employees screen. */
+  function seedErpAuth(role, name, uid, modules) {
     try {
       var stamp = new Date().toISOString();
       localStorage.setItem('srerp_v18_clean_store_initialized', stamp);
@@ -95,24 +98,31 @@
         userId: 'AUTH-ROOT-ADMIN', username: name || 'User', role: 'ADMIN',
         mode: 'supabase', verifiedAt: now, expiresAt: now + 12 * 3600 * 1000
       }));
-      var entryId = role === 'STAFF' ? 'AUTH-STAFF-' + String(uid || '').replace(/-/g, '').slice(0, 10) : 'AUTH-ROOT-ADMIN';
+      var isStaff = role === 'STAFF';
+      var entryId = isStaff ? 'AUTH-STAFF-' + String(uid || '').replace(/-/g, '').slice(0, 10) : 'AUTH-ROOT-ADMIN';
+      var permissions = isStaff ? (Array.isArray(modules) && modules.length ? modules : ['pos']) : ['*'];
+      var landing = isStaff ? permissions[0] : 'ceo';
       var users;
       try { users = JSON.parse(localStorage.getItem('srerp_auth_users_v6') || '[]'); } catch (_) { users = []; }
       if (!Array.isArray(users)) users = [];
       var entry = users.find(function (u) { return u && u.id === entryId; });
       if (entry) {
         entry.active = true;
-        entry.role = role === 'STAFF' ? 'STAFF' : 'ADMIN';
+        entry.role = isStaff ? 'CUSTOM' : 'ADMIN';
+        entry.permissions = permissions;
+        entry.landing = landing;
         if (name) { entry.fullName = name; entry.username = entry.username || name; }
       } else {
         users.push({
           id: entryId,
-          username: name || (role === 'STAFF' ? 'Xodim' : 'Admin'),
+          username: name || (isStaff ? 'Xodim' : 'Admin'),
           password: randomSecret(),
-          fullName: name || (role === 'STAFF' ? 'Xodim' : 'Admin'),
-          role: role === 'STAFF' ? 'STAFF' : 'ADMIN',
+          fullName: name || (isStaff ? 'Xodim' : 'Admin'),
+          role: isStaff ? 'CUSTOM' : 'ADMIN',
+          permissions: permissions,
+          landing: landing,
           active: true,
-          protected: role !== 'STAFF',
+          protected: !isStaff,
           createdAt: new Date().toISOString()
         });
       }
@@ -121,19 +131,122 @@
     } catch (_) { /* storage unavailable */ }
   }
 
-  // The STAFF role does not exist in the ERP; register it before the ERP
-  // boots so its own permission system restricts the menu.
-  function injectStaffRole() {
-    try {
-      if (typeof AUTH_V6_ROLES === 'object' && AUTH_V6_ROLES && !AUTH_V6_ROLES.STAFF) {
-        AUTH_V6_ROLES.STAFF = {
-          label: 'Xodim',
-          landing: 'pos',
-          views: ['pos', 'inventory'],
-          access: 'POS Kassa va Inventarizatsiya'
-        };
+  /* Owner-only: bridge the ERP's own native "Employees" screen (its
+     login+permissions modal already exists, built by the vendor) to real,
+     cross-device Supabase accounts instead of browser-only storage. */
+  function hookEmployeeManagement() {
+    if (window.__srEmployeeHookInstalled) return;
+    window.__srEmployeeHookInstalled = true;
+
+    function withSession() {
+      return client.auth.getSession().then(function (result) {
+        var current = result.data && result.data.session;
+        if (!current) throw new Error('Sessiya tugagan');
+        return current;
+      });
+    }
+    function apiRequest(method, body) {
+      return withSession().then(function (session) {
+        return fetch('/api/staff', {
+          method: method,
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + session.access_token },
+          body: body ? JSON.stringify(body) : undefined
+        }).then(function (response) {
+          return response.json().catch(function () { return {}; }).then(function (payload) {
+            if (!response.ok) throw new Error(payload.error || ('HTTP ' + response.status));
+            return payload;
+          });
+        });
+      });
+    }
+
+    function toLocalRecord(member) {
+      var perms = Array.isArray(member.erp_modules) && member.erp_modules.length ? member.erp_modules : ['pos'];
+      return {
+        id: member.id,
+        username: member.login,
+        password: '',
+        fullName: member.name || member.login,
+        role: 'CUSTOM',
+        permissions: perms,
+        landing: perms[0],
+        active: member.active,
+        protected: false,
+        createdAt: new Date().toISOString()
+      };
+    }
+
+    function reconcile() {
+      return apiRequest('GET').then(function (data) {
+        var staff = data.staff || [];
+        var kept = (typeof authGetUsers === 'function' ? authGetUsers() : [])
+          .filter(function (u) { return u.protected || u.role === 'ADMIN'; });
+        staff.forEach(function (member) { kept.push(toLocalRecord(member)); });
+        if (typeof authSetUsers === 'function') authSetUsers(kept);
+        try { authRenderUserTable(); } catch (_) { /* not rendered yet */ }
+        try { if (typeof renderEmployees === 'function') renderEmployees(); } catch (_) { /* ignore */ }
+      }).catch(function (error) { console.warn('Staff list unavailable:', error.message); });
+    }
+
+    window.authSaveUser = function () {
+      var id = document.getElementById('authUserId').value;
+      var fullName = document.getElementById('authUserFullName').value.trim();
+      var login = document.getElementById('authUserUsername').value.trim().toLowerCase();
+      var password = document.getElementById('authUserPassword').value;
+      var active = document.getElementById('authUserActive').checked;
+      var permissions = (typeof authV12SelectedPermissions === 'function') ? authV12SelectedPermissions() : [];
+      if (!fullName || !login) { showToast('Xodim ismi va loginni kiriting', 'bi-x-circle text-danger'); return; }
+      if (!permissions.length) { showToast('Kamida bitta bo‘limga ruxsat bering', 'bi-x-circle text-danger'); return; }
+      if (!id && !password) { showToast('Yangi xodim uchun parol kiriting', 'bi-x-circle text-danger'); return; }
+      if (password && password.length < 8) { showToast('Parol kamida 8 belgidan iborat bo‘lishi kerak', 'bi-x-circle text-danger'); return; }
+      var body = id
+        ? { action: 'update', id: id, name: fullName, active: active, modules: permissions }
+        : { action: 'create', login: login, name: fullName, password: password, modules: permissions };
+      if (id && password) body.password = password;
+      apiRequest('POST', body).then(function () {
+        try { bootstrap.Modal.getInstance(document.getElementById('modalAuthUser'))?.hide(); } catch (_) { /* ignore */ }
+        showToast(id ? 'Xodim yangilandi' : 'Yangi xodim yaratildi');
+        return reconcile();
+      }).catch(function (error) {
+        showToast(error.message || 'Xatolik yuz berdi', 'bi-x-circle text-danger');
+      });
+    };
+
+    window.authDeleteUser = function (id) {
+      var users = typeof authGetUsers === 'function' ? authGetUsers() : [];
+      var user = users.find(function (u) { return u.id === id; });
+      if (!user || user.protected) { showToast('Asosiy administratorni o‘chirib bo‘lmaydi', 'bi-shield-lock text-danger'); return; }
+      if (!window.confirm((user.fullName || user.username) + ' loginini o‘chirasizmi?')) return;
+      apiRequest('POST', { action: 'delete', id: id }).then(function () {
+        showToast('Xodim o‘chirildi', 'bi-trash text-danger');
+        return reconcile();
+      }).catch(function (error) {
+        showToast(error.message || 'Xatolik yuz berdi', 'bi-x-circle text-danger');
+      });
+    };
+
+    // The login (== the account's real email prefix) cannot be renamed
+    // from here — only the display name and permissions can.
+    var baseOpenModal = window.authOpenUserModal;
+    if (typeof baseOpenModal === 'function') {
+      window.authOpenUserModal = function (id) {
+        baseOpenModal(id || '');
+        if (id) {
+          var usernameEl = document.getElementById('authUserUsername');
+          if (usernameEl) usernameEl.disabled = true;
+        }
+      };
+    }
+
+    document.addEventListener('click', function (event) {
+      var target = event.target;
+      if (!target || !target.closest) return;
+      if (target.closest('[data-view="employees"], [data-view-link="employees"], [data-bn="employees"]')) {
+        window.setTimeout(reconcile, 30);
       }
-    } catch (_) { /* older ERP build */ }
+    }, true);
+
+    reconcile();
   }
 
   function tryUnlock() {
@@ -170,7 +283,7 @@
     cachedProfile = JSON.parse(localStorage.getItem(ERP_PROFILE_KEY) || 'null');
     if (cachedProfile && cachedProfile.id !== stored.id) cachedProfile = null;
   } catch (_) { cachedProfile = null; }
-  if (cachedProfile) seedErpAuth(cachedProfile.role, cachedProfile.name, stored.id);
+  if (cachedProfile) seedErpAuth(cachedProfile.role, cachedProfile.name, stored.id, cachedProfile.modules);
 
   var domReady = new Promise(function (resolve) {
     if (document.readyState !== 'loading') resolve();
@@ -178,9 +291,13 @@
   });
 
   document.addEventListener('DOMContentLoaded', function () {
-    injectStaffRole();
     hookLogout();
     hookSync();
+    if (cachedProfile && cachedProfile.role === 'OWNER') {
+      window.setTimeout(function () {
+        try { hookEmployeeManagement(); } catch (error) { console.warn('Employee management unavailable:', error.message); }
+      }, 0);
+    }
   });
 
   /* ---------------------------- sign out -------------------------------- */
@@ -419,7 +536,7 @@
     });
 
     return client.from('profiles')
-      .select('username, active, expires_at, erp_role, workspace_owner')
+      .select('username, active, expires_at, erp_role, workspace_owner, erp_modules')
       .eq('id', session.user.id).single()
       .then(function (profileResult) {
         var profile = profileResult.data;
@@ -435,12 +552,17 @@
         }
         var role = (profile.workspace_owner || profile.erp_role === 'STAFF') ? 'STAFF' : 'OWNER';
         var name = profile.username || session.user.email || '';
+        var modules = Array.isArray(profile.erp_modules) ? profile.erp_modules : [];
         try {
-          localStorage.setItem(ERP_PROFILE_KEY, JSON.stringify({ id: session.user.id, role: role, name: name }));
+          localStorage.setItem(ERP_PROFILE_KEY, JSON.stringify({ id: session.user.id, role: role, name: name, modules: modules }));
         } catch (_) { /* ignore */ }
-        seedErpAuth(role, name, session.user.id);
-        injectStaffRole();
+        seedErpAuth(role, name, session.user.id, modules);
         tryUnlock();
+        if (role === 'OWNER') {
+          domReady.then(function () {
+            try { hookEmployeeManagement(); } catch (error) { console.warn('Employee management unavailable:', error.message); }
+          });
+        }
 
         // Restore only after the ERP has fully parsed: its inline first-run
         // initializers must never execute AFTER the restore, or they would

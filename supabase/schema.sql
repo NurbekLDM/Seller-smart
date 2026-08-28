@@ -83,6 +83,12 @@ alter table public.profiles add column if not exists expires_at timestamptz;
 alter table public.profiles add column if not exists workspace_owner uuid references auth.users (id) on delete cascade;
 alter table public.profiles add column if not exists erp_role text;
 
+-- v4 addition: erp_modules — the ERP sidebar sections a staff account may
+-- open (e.g. {pos,inventory}), chosen by the owner from the ERP's own
+-- Employees screen. Null/empty for owner accounts (they always have full
+-- access); staff accounts never receive the wildcard '*'.
+alter table public.profiles add column if not exists erp_modules text[];
+
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql

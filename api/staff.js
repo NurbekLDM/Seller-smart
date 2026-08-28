@@ -1,8 +1,10 @@
 /* ERP staff management API (Vercel serverless function).
    Lets a WORKSPACE OWNER manage their own ERP employees: accounts that
    log in with a username (mapped to <username>@STAFF_EMAIL_DOMAIN), see
-   only the ERP (POS + Inventarizatsiya), and work inside the owner's
-   workspace. Owners can only ever touch staff bound to themselves.
+   only the ERP sections the owner grants them, and work inside the
+   owner's workspace. Owners can only ever touch staff bound to themselves.
+   Managed from the ERP's own "Employees" screen (public/assets/erp-page.js
+   bridges that native UI to this API).
 
    Environment variables:
      SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY (required)
@@ -80,7 +82,7 @@ async function requireOwner(userId) {
 
 async function ownStaffProfiles(ownerId) {
   return readJson(await fetch(
-    `${SUPABASE_URL}/rest/v1/profiles?select=id,username,active,expires_at&workspace_owner=eq.${encodeURIComponent(ownerId)}`,
+    `${SUPABASE_URL}/rest/v1/profiles?select=id,username,active,erp_modules&workspace_owner=eq.${encodeURIComponent(ownerId)}`,
     { headers: serviceHeaders }
   ));
 }
@@ -108,7 +110,7 @@ async function listStaff(ownerId) {
       login: email.endsWith(`@${STAFF_DOMAIN}`) ? email.slice(0, -(STAFF_DOMAIN.length + 1)) : email,
       name: profile.username || '',
       active: profile.active !== false,
-      expires_at: profile.expires_at || null,
+      erp_modules: Array.isArray(profile.erp_modules) ? profile.erp_modules : [],
       last_sign_in_at: authUser.last_sign_in_at || ''
     };
   }).sort((a, b) => a.login.localeCompare(b.login));
@@ -118,11 +120,22 @@ function validPassword(value) {
   return typeof value === 'string' && value.length >= 8 && value.length <= 72;
 }
 
-function parseExpiry(value) {
-  if (value === null || value === undefined || value === '') return null;
-  const time = new Date(value).getTime();
-  if (Number.isNaN(time)) throw fail(400, 'Muddat sanasi noto‘g‘ri.');
-  return new Date(time).toISOString();
+// Whitelist by shape rather than by a fixed enum: the embedded ERP's own
+// menu/section ids have changed across vendor upgrades, so pin the format
+// (lowercase id-like tokens) and let the owner only ever grant sections
+// that actually exist in the ERP's own permission picker on the client.
+function validModules(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const value of list) {
+    if (typeof value === 'string' && /^[a-z0-9_-]{2,40}$/.test(value) && !seen.has(value)) {
+      seen.add(value);
+      out.push(value);
+      if (out.length >= 25) break;
+    }
+  }
+  return out;
 }
 
 async function createStaff(ownerId, body) {
@@ -132,7 +145,8 @@ async function createStaff(ownerId, body) {
   }
   if (!validPassword(body.password)) throw fail(400, 'Parol kamida 8 belgidan iborat bo‘lishi kerak.');
   const name = String(body.name || '').trim().slice(0, 60) || login;
-  const expiresAt = parseExpiry(body.expires_at);
+  const modules = validModules(body.modules);
+  if (!modules.length) throw fail(400, 'Kamida bitta bo‘limga ruxsat bering.');
 
   const existing = await ownStaffProfiles(ownerId);
   if (existing.length >= MAX_STAFF) throw fail(400, `Xodimlar soni cheklangan (${MAX_STAFF}).`);
@@ -162,7 +176,7 @@ async function createStaff(ownerId, body) {
     await readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${encodeURIComponent(created.id)}`, {
       method: 'PATCH',
       headers: { ...serviceHeaders, prefer: 'return=minimal' },
-      body: JSON.stringify({ workspace_owner: ownerId, erp_role: 'STAFF', username: name, expires_at: expiresAt })
+      body: JSON.stringify({ workspace_owner: ownerId, erp_role: 'STAFF', username: name, erp_modules: modules })
     }));
   } catch (bindError) {
     try {
@@ -183,7 +197,11 @@ async function updateStaff(ownerId, body) {
   const patch = {};
   if (typeof body.active === 'boolean') patch.active = body.active;
   if (typeof body.name === 'string') patch.username = body.name.trim().slice(0, 60);
-  if ('expires_at' in body) patch.expires_at = parseExpiry(body.expires_at);
+  if (body.modules !== undefined) {
+    const modules = validModules(body.modules);
+    if (!modules.length) throw fail(400, 'Kamida bitta bo‘limga ruxsat bering.');
+    patch.erp_modules = modules;
+  }
   if (Object.keys(patch).length) {
     await readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${encodeURIComponent(id)}`, {
       method: 'PATCH',
