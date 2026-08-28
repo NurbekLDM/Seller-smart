@@ -71,7 +71,7 @@ async function isAdmin(userId) {
 async function listUsers() {
   const [authData, profiles, admins] = await Promise.all([
     readJson(await fetch(`${SUPABASE_URL}/auth/v1/admin/users?per_page=1000`, { headers: serviceHeaders })),
-    readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?select=id,username,active,expires_at,workspace_owner,erp_role`, { headers: serviceHeaders })),
+    readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?select=id,username,active,expires_at,workspace_owner,erp_role,erp_modules`, { headers: serviceHeaders })),
     readJson(await fetch(`${SUPABASE_URL}/rest/v1/admins?select=user_id`, { headers: serviceHeaders }))
   ]);
   const authUsers = Array.isArray(authData) ? authData : (authData.users || []);
@@ -88,7 +88,9 @@ async function listUsers() {
       is_admin: adminIds.has(user.id),
       expires_at: profile.expires_at || null,
       is_staff: Boolean(profile.workspace_owner),
+      owner_id: profile.workspace_owner || '',
       owner_email: profile.workspace_owner ? (emailById.get(profile.workspace_owner) || '') : '',
+      erp_modules: Array.isArray(profile.erp_modules) ? profile.erp_modules : [],
       created_at: user.created_at || '',
       last_sign_in_at: user.last_sign_in_at || ''
     };

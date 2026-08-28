@@ -88,10 +88,11 @@
 
     <div class="card">
       <h2>Foydalanuvchilar <span class="muted" id="countLabel"></span></h2>
+      <p class="muted" style="margin:-6px 0 12px;font-size:12px">Bu ro‘yxatda faqat workspace egalari. Har bir egasining ERP xodimlari “Xodimlar” ustunidagi sonni bosganda ochiladi — xodimlarni odatda egasining o‘zi ERP ichidan boshqaradi.</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Email</th><th>Ism</th><th>Holat</th><th>Muddat</th><th>Oxirgi kirish</th><th>Amallar</th></tr></thead>
-          <tbody id="rows"><tr><td colspan="6" class="muted">Yuklanmoqda...</td></tr></tbody>
+          <thead><tr><th>Email</th><th>Ism</th><th>Holat</th><th>Xodimlar</th><th>Muddat</th><th>Oxirgi kirish</th><th>Amallar</th></tr></thead>
+          <tbody id="rows"><tr><td colspan="7" class="muted">Yuklanmoqda...</td></tr></tbody>
         </table>
       </div>
       <div class="error" id="listError"></div>
@@ -161,26 +162,143 @@
         return payload;
       }
 
+      // Which owners currently have their employee sub-table expanded.
+      var expandedOwners = {};
+
+      /* One employee row inside an owner's expanded sub-table. Employees are
+         ERP-only accounts living in their owner's workspace: no expiry (they
+         follow the owner's), no admin toggle, and the login is the account's
+         real email prefix so it is shown but never renamed here. */
+      function staffRowElement(member) {
+        var tr = document.createElement('tr');
+        var modules = (member.erp_modules || []);
+        tr.innerHTML =
+          '<td><b>' + esc(member.login) + '</b><div class="muted">' + esc(member.email) + '</div></td>' +
+          '<td>' + esc(member.username || '—') + '</td>' +
+          '<td><span class="badge ' + (member.active ? 'on">Faol' : 'off">Bloklangan') + '</span></td>' +
+          '<td class="muted">' + (modules.length ? esc(modules.join(', ')) : '—') + '</td>' +
+          '<td class="muted">' + fmtDate(member.last_sign_in_at) + '</td>' +
+          '<td></td>';
+        var actions = document.createElement('div');
+        actions.className = 'actions';
+
+        var renameButton = document.createElement('button');
+        renameButton.className = 'small ghost';
+        renameButton.textContent = 'Ism';
+        renameButton.onclick = function () {
+          var name = window.prompt('Xodim ismi:', member.username || '');
+          if (name === null) return;
+          run(renameButton, { action: 'update', id: member.id, username: name });
+        };
+        actions.appendChild(renameButton);
+
+        var passwordButton = document.createElement('button');
+        passwordButton.className = 'small ghost';
+        passwordButton.textContent = 'Parol';
+        passwordButton.onclick = function () {
+          var password = generatePassword();
+          if (!window.confirm(member.login + ' uchun yangi parol o‘rnatilsinmi?\n\nYangi parol: ' + password + '\n\nOK bosilgach parolni nusxalab oling — u qayta ko‘rinmaydi.')) return;
+          run(passwordButton, { action: 'password', id: member.id, password: password }, function () {
+            showNotice(esc(member.login) + ' uchun yangi parol: <b>' + esc(password) + '</b> — hozir nusxalab oling.');
+          });
+        };
+        actions.appendChild(passwordButton);
+
+        var toggleButton = document.createElement('button');
+        toggleButton.className = 'small ' + (member.active ? 'danger' : 'ok');
+        toggleButton.textContent = member.active ? 'Bloklash' : 'Faollashtirish';
+        toggleButton.onclick = function () {
+          if (member.active && !window.confirm(member.login + ' xodimi bloklansinmi? U ERP‘ga kira olmaydi.')) return;
+          run(toggleButton, { action: 'update', id: member.id, active: !member.active });
+        };
+        actions.appendChild(toggleButton);
+
+        var deleteButton = document.createElement('button');
+        deleteButton.className = 'small danger';
+        deleteButton.textContent = 'O‘chirish';
+        deleteButton.onclick = function () {
+          if (!window.confirm(member.login + ' xodimi butunlay o‘chirilsinmi? U boshqa kira olmaydi.\n(Do‘kon ma’lumotlari egasida qoladi.)')) return;
+          run(deleteButton, { action: 'delete', id: member.id });
+        };
+        actions.appendChild(deleteButton);
+
+        tr.lastElementChild.appendChild(actions);
+        return tr;
+      }
+
+      function staffPanelRow(owner, staff) {
+        var tr = document.createElement('tr');
+        var cell = document.createElement('td');
+        cell.colSpan = 7;
+        cell.style.cssText = 'background:rgba(255,255,255,.03);padding:12px 14px';
+        var heading = document.createElement('div');
+        heading.className = 'muted';
+        heading.style.cssText = 'margin-bottom:8px;font-size:12px';
+        heading.textContent = owner.email + ' — ERP xodimlari (' + staff.length + ' ta)';
+        cell.appendChild(heading);
+        var table = document.createElement('table');
+        table.innerHTML = '<thead><tr><th>Login</th><th>Ism</th><th>Holat</th><th>Ruxsat berilgan bo‘limlar</th><th>Oxirgi kirish</th><th>Amallar</th></tr></thead>';
+        var body = document.createElement('tbody');
+        staff.forEach(function (member) { body.appendChild(staffRowElement(member)); });
+        table.appendChild(body);
+        cell.appendChild(table);
+        tr.appendChild(cell);
+        return tr;
+      }
+
       function renderRows(users) {
         var tbody = el('rows');
         tbody.innerHTML = '';
-        el('countLabel').textContent = '· ' + users.length + ' ta';
-        users.forEach(function (user) {
+
+        // ERP employees are not accounts of their own here — they belong to a
+        // workspace owner. Listing them inline would mix every owner's staff
+        // into one list, so they are grouped under their owner instead.
+        var owners = users.filter(function (u) { return !u.is_staff; });
+        var staffByOwner = {};
+        users.filter(function (u) { return u.is_staff; }).forEach(function (member) {
+          var login = member.email.indexOf('@') > 0 ? member.email.slice(0, member.email.indexOf('@')) : member.email;
+          member.login = login;
+          (staffByOwner[member.owner_id] = staffByOwner[member.owner_id] || []).push(member);
+        });
+        Object.keys(staffByOwner).forEach(function (key) {
+          staffByOwner[key].sort(function (a, b) { return a.login.localeCompare(b.login); });
+        });
+
+        var staffTotal = users.length - owners.length;
+        el('countLabel').textContent = '· ' + owners.length + ' ta egasi' + (staffTotal ? ' · ' + staffTotal + ' ta xodim' : '');
+
+        owners.forEach(function (user) {
           var tr = document.createElement('tr');
           var isMe = me && user.id === me.id;
           var expired = user.expires_at && new Date(user.expires_at).getTime() <= Date.now();
           var expiryLabel = user.expires_at
             ? (expired ? '<span class="badge off">Tugagan</span> ' : '') + new Date(user.expires_at).toLocaleDateString()
             : '∞';
+          var staff = staffByOwner[user.id] || [];
           tr.innerHTML =
-            '<td>' + esc(user.email) + (isMe ? ' <span class="muted">(siz)</span>' : '') +
-              (user.is_staff ? '<div class="muted">xodim · ' + esc(user.owner_email) + '</div>' : '') + '</td>' +
+            '<td>' + esc(user.email) + (isMe ? ' <span class="muted">(siz)</span>' : '') + '</td>' +
             '<td>' + esc(user.username || '—') + '</td>' +
             '<td><span class="badge ' + (user.active ? 'on">Faol' : 'off">Bloklangan') + '</span>' +
               (user.is_admin ? '<span class="badge adm">Admin</span>' : '') + '</td>' +
+            '<td></td>' +
             '<td class="muted">' + expiryLabel + '</td>' +
             '<td class="muted">' + fmtDate(user.last_sign_in_at) + '</td>' +
             '<td></td>';
+
+          var staffCell = tr.children[3];
+          if (!staff.length) {
+            staffCell.innerHTML = '<span class="muted">—</span>';
+          } else {
+            var staffButton = document.createElement('button');
+            staffButton.className = 'small ghost';
+            staffButton.textContent = (expandedOwners[user.id] ? '▾ ' : '▸ ') + staff.length + ' ta';
+            staffButton.onclick = function () {
+              expandedOwners[user.id] = !expandedOwners[user.id];
+              renderRows(users);
+            };
+            staffCell.appendChild(staffButton);
+          }
+
           var actions = document.createElement('div');
           actions.className = 'actions';
 
@@ -265,6 +383,7 @@
 
           tr.lastElementChild.appendChild(actions);
           tbody.appendChild(tr);
+          if (staff.length && expandedOwners[user.id]) tbody.appendChild(staffPanelRow(user, staff));
         });
       }
 
