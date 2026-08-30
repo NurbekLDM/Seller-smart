@@ -51,7 +51,13 @@ const headBlock = `\n${HEAD_BEGIN}\n` +
   // desktop), which froze the app on the customer's laptop. The file is
   // kept, unchanged, to be re-enabled once the base64 payloads move out of
   // the HTML and a new tab costs kilobytes instead of megabytes.
-  '<script src="assets/proai-i18n.js"></script>\n' +
+  // assets/proai-i18n.js is deliberately NOT injected either: it loads the
+  // app's i18n module into the PRO AI iframe, and that module installs a
+  // MutationObserver in a document where Tailwind's Play CDN is already
+  // running its own — switching language with that panel open froze the
+  // browser. Re-enable only with a translator that does a single pass and
+  // observes nothing.
+
   '<script src="assets/version-check.js"></script>\n' +
   `${HEAD_END}\n`;
 const headIndex = headMatch.index + headMatch[0].length;
