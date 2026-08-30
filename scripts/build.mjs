@@ -46,6 +46,7 @@ const headBlock = `\n${HEAD_BEGIN}\n` +
   '<script src="assets/vendor/supabase.js"></script>\n' +
   '<script src="assets/auth-guard.js"></script>\n' +
   '<script src="assets/analytics-windows.js"></script>\n' +
+  '<script src="assets/proai-i18n.js"></script>\n' +
   '<script src="assets/version-check.js"></script>\n' +
   `${HEAD_END}\n`;
 const headIndex = headMatch.index + headMatch[0].length;
