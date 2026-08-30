@@ -10731,6 +10731,35 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
     );
   }
 
+  /* SR_I18N_EXTEND_BEGIN (build-time patch — scripts/build.mjs) */
+  function srRebuildTranslationPattern() {
+    const keys = [...dictionary.keys()].sort((left, right) => right.length - left.length);
+    try {
+      translationPattern = new RegExp(
+        '(?<![\\p{L}\\p{N}])(?:' + keys.map(escapePattern).join('|') + ')(?![\\p{L}\\p{N}])',
+        'giu'
+      );
+    } catch (_) {
+      translationPattern = new RegExp('(?:' + keys.map(escapePattern).join('|') + ')', 'gi');
+    }
+  }
+  window.smartRetailI18nExtend = function (pairs) {
+    if (!Array.isArray(pairs)) return 0;
+    let added = 0;
+    for (const pair of pairs) {
+      if (!pair || typeof pair[0] !== 'string' || typeof pair[1] !== 'string') continue;
+      const key = canonical(pair[0]);
+      // Existing entries win: the base table is what production already
+      // renders; the merge only fills gaps.
+      if (!key || dictionary.has(key)) continue;
+      dictionary.set(key, pair[1]);
+      added += 1;
+    }
+    if (added) srRebuildTranslationPattern();
+    return added;
+  };
+  /* SR_I18N_EXTEND_END */
+
   function translate(value, locale = currentLocale) {
     const text = String(value == null ? '' : value);
     if (locale !== 'ru' || !text.trim()) return text;
@@ -10910,16 +10939,34 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
   function notifyRelatives(locale, source) {
     if (syncing) return;
     syncing = true;
+    /* SR_I18N_DEFER: the relative document translates in its own task, so
+       one click no longer pays for two full-document walks + two layout
+       storms synchronously. The locale guard re-runs inside the timeout. */
     try {
       const frame = document.getElementById('smartRetailErpFrame');
       if (frame && frame.contentWindow && frame.contentWindow.smartRetailI18n
           && frame.contentWindow.smartRetailI18n.locale() !== locale) {
-        frame.contentWindow.smartRetailI18n.setLocale(locale, 'parent');
+        window.setTimeout(function () {
+          try {
+            const target = document.getElementById('smartRetailErpFrame');
+            if (target && target.contentWindow && target.contentWindow.smartRetailI18n
+                && target.contentWindow.smartRetailI18n.locale() !== locale) {
+              target.contentWindow.smartRetailI18n.setLocale(locale, 'parent');
+            }
+          } catch (_) { /* frame gone or reloading */ }
+        }, 0);
       }
       if (source !== 'parent' && window.parent && window.parent !== window
           && window.parent.smartRetailI18n
           && window.parent.smartRetailI18n.locale() !== locale) {
-        window.parent.smartRetailI18n.setLocale(locale, 'child');
+        window.setTimeout(function () {
+          try {
+            if (window.parent && window.parent !== window && window.parent.smartRetailI18n
+                && window.parent.smartRetailI18n.locale() !== locale) {
+              window.parent.smartRetailI18n.setLocale(locale, 'child');
+            }
+          } catch (_) { /* parent gone */ }
+        }, 0);
       }
     } catch (_) {
       /* Sandboxed or cross-origin frames can still pick up shared storage. */
@@ -14605,7 +14652,32 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
     if(target==='ru'){if(base&&typeof base.setLocale==='function')base.setLocale('ru','erp-i18n-bootstrap');else refresh('ru');}
   }
   window.smartRetailErpI18nSupplement={version:53,groups:()=>Object.fromEntries(Object.entries(GROUPS).map(([key,value])=>[key,value.length])),refresh:()=>refresh(locale),translate:(value,target)=>{const previous=locale;locale=target||locale;const output=translate(value);locale=previous;return output;}};
-  if(document.body)install();else document.addEventListener('DOMContentLoaded',install,{once:true});
+  /* SR_I18N_MERGE (build-time patch — scripts/build.mjs): one engine only.
+     When the base i18n exposes the extend API, hand it our 2,500 pairs and
+     go dormant — no second observer, no second walk, no livelock. The
+     original install() remains as the fallback for a vendor drop whose
+     base engine we no longer recognise. */
+  function srCooperativeInstall(){
+    var base=window.smartRetailI18n;
+    if(base&&typeof window.smartRetailI18nExtend==='function'
+        &&typeof base.refresh==='function'&&typeof base.locale==='function'){
+      var added=-1;
+      try{added=window.smartRetailI18nExtend(PAIRS);}catch(_){added=-1;}
+      if(added>=0){
+        var mirror=function(){try{document.documentElement.setAttribute('data-erp-language',base.locale());}catch(_){/* detached */}};
+        window.smartRetailErpI18nSupplement={version:53,mode:'merged',added:added,
+          groups:function(){return Object.fromEntries(Object.entries(GROUPS).map(function(entry){return [entry[0],entry[1].length];}));},
+          refresh:function(){return base.refresh();},
+          translate:function(value,target){return base.translate(value,target||base.locale());}};
+        window.addEventListener('smart-retail-language-change',mirror);
+        mirror();
+        if(base.locale()==='ru')base.refresh();
+        return;
+      }
+    }
+    install();
+  }
+  if(document.body)srCooperativeInstall();else document.addEventListener('DOMContentLoaded',srCooperativeInstall,{once:true});
 })();
 </script>
 <!-- SMART_RETAIL_ERP_I18N_53_END -->

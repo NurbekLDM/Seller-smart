@@ -99,6 +99,201 @@ html = html.slice(0, closingBody).replace(/\n+$/, '\n') + bodyBlock + html.slice
    the frame, the "open in a new window" popup and public/erp.html all get
    the fix from one place. Measured with headless Chrome: unpatched >120s
    (timeout), patched 8s. */
+/* ---------------- i18n unification (fixes the RU-switch freeze) ---------
+   The ERP document ships TWO complete translators: the base i18n v23
+   (inside SMART_RETAIL_ERP_B64, ~900 phrases) and the "supplement 53"
+   module (SMART_RETAIL_ERP_I18N_53_B64, 2,500 phrases) — EACH with its own
+   whole-document MutationObserver watching characterData. On a language
+   switch each engine rewrites ~12,000 text nodes; every write wakes the
+   other engine, whose observer path passes refreshOriginal=true — i.e. it
+   REPLACES its stored original with the other engine's output and
+   re-translates that. Where the dictionaries overlap with different
+   wording (~1,600 shared keys) the two engines rewrite each other's text
+   forever: measured in headless Chrome, one click on the ERP's RU button
+   wedges the renderer for >180s (never recovers); without the click the
+   same document settles in 8s. The parent page — SAME base engine, but
+   with its supplement merged into one dictionary — switches in ~0ms.
+
+   Fix: converge the ERP on the parent's architecture.
+   (1) The base engine gets window.smartRetailI18nExtend(pairs): merge
+       extra pairs into its closure dictionary and rebuild the pattern.
+   (2) The supplement, when that API exists, merges its PAIRS and goes
+       DORMANT — no second observer, no second walk; its public API
+       delegates to the base engine. Without the API (a vendor drop that
+       changes the base beyond recognition) it falls back to its original
+       behaviour, so the build never produces an untranslated ERP.
+   (3) notifyRelatives defers cross-document translation by one task, so
+       switching inside the ERP no longer runs the parent's full walk in
+       the same click task (and vice versa) — each document paints its own
+       switch first. Loop-safe: the locale-equality guard re-runs inside
+       the timeout, and source tags prevent echo.
+   Anchors are exact vendor text; a mismatch fails the build loudly. */
+
+const I18N_PATTERN_ANCHOR = `  } catch (_) {
+    translationPattern = new RegExp(
+      '(?:' + replacementKeys.map(escapePattern).join('|') + ')',
+      'gi'
+    );
+  }`;
+
+const I18N_EXTEND_CODE = `${I18N_PATTERN_ANCHOR}
+
+  /* SR_I18N_EXTEND_BEGIN (build-time patch — scripts/build.mjs) */
+  function srRebuildTranslationPattern() {
+    const keys = [...dictionary.keys()].sort((left, right) => right.length - left.length);
+    try {
+      translationPattern = new RegExp(
+        '(?<![\\\\p{L}\\\\p{N}])(?:' + keys.map(escapePattern).join('|') + ')(?![\\\\p{L}\\\\p{N}])',
+        'giu'
+      );
+    } catch (_) {
+      translationPattern = new RegExp('(?:' + keys.map(escapePattern).join('|') + ')', 'gi');
+    }
+  }
+  window.smartRetailI18nExtend = function (pairs) {
+    if (!Array.isArray(pairs)) return 0;
+    let added = 0;
+    for (const pair of pairs) {
+      if (!pair || typeof pair[0] !== 'string' || typeof pair[1] !== 'string') continue;
+      const key = canonical(pair[0]);
+      // Existing entries win: the base table is what production already
+      // renders; the merge only fills gaps.
+      if (!key || dictionary.has(key)) continue;
+      dictionary.set(key, pair[1]);
+      added += 1;
+    }
+    if (added) srRebuildTranslationPattern();
+    return added;
+  };
+  /* SR_I18N_EXTEND_END */`;
+
+const I18N_NOTIFY_ANCHOR = `  function notifyRelatives(locale, source) {
+    if (syncing) return;
+    syncing = true;
+    try {
+      const frame = document.getElementById('smartRetailErpFrame');
+      if (frame && frame.contentWindow && frame.contentWindow.smartRetailI18n
+          && frame.contentWindow.smartRetailI18n.locale() !== locale) {
+        frame.contentWindow.smartRetailI18n.setLocale(locale, 'parent');
+      }
+      if (source !== 'parent' && window.parent && window.parent !== window
+          && window.parent.smartRetailI18n
+          && window.parent.smartRetailI18n.locale() !== locale) {
+        window.parent.smartRetailI18n.setLocale(locale, 'child');
+      }
+    } catch (_) {
+      /* Sandboxed or cross-origin frames can still pick up shared storage. */
+    } finally {
+      syncing = false;
+    }
+  }`;
+
+const I18N_NOTIFY_DEFERRED = `  function notifyRelatives(locale, source) {
+    if (syncing) return;
+    syncing = true;
+    /* SR_I18N_DEFER: the relative document translates in its own task, so
+       one click no longer pays for two full-document walks + two layout
+       storms synchronously. The locale guard re-runs inside the timeout. */
+    try {
+      const frame = document.getElementById('smartRetailErpFrame');
+      if (frame && frame.contentWindow && frame.contentWindow.smartRetailI18n
+          && frame.contentWindow.smartRetailI18n.locale() !== locale) {
+        window.setTimeout(function () {
+          try {
+            const target = document.getElementById('smartRetailErpFrame');
+            if (target && target.contentWindow && target.contentWindow.smartRetailI18n
+                && target.contentWindow.smartRetailI18n.locale() !== locale) {
+              target.contentWindow.smartRetailI18n.setLocale(locale, 'parent');
+            }
+          } catch (_) { /* frame gone or reloading */ }
+        }, 0);
+      }
+      if (source !== 'parent' && window.parent && window.parent !== window
+          && window.parent.smartRetailI18n
+          && window.parent.smartRetailI18n.locale() !== locale) {
+        window.setTimeout(function () {
+          try {
+            if (window.parent && window.parent !== window && window.parent.smartRetailI18n
+                && window.parent.smartRetailI18n.locale() !== locale) {
+              window.parent.smartRetailI18n.setLocale(locale, 'child');
+            }
+          } catch (_) { /* parent gone */ }
+        }, 0);
+      }
+    } catch (_) {
+      /* Sandboxed or cross-origin frames can still pick up shared storage. */
+    } finally {
+      syncing = false;
+    }
+  }`;
+
+const I18N_SUPPLEMENT_TAIL = `  if(document.body)install();else document.addEventListener('DOMContentLoaded',install,{once:true});`;
+
+const I18N_SUPPLEMENT_COOPERATIVE = `  /* SR_I18N_MERGE (build-time patch — scripts/build.mjs): one engine only.
+     When the base i18n exposes the extend API, hand it our 2,500 pairs and
+     go dormant — no second observer, no second walk, no livelock. The
+     original install() remains as the fallback for a vendor drop whose
+     base engine we no longer recognise. */
+  function srCooperativeInstall(){
+    var base=window.smartRetailI18n;
+    if(base&&typeof window.smartRetailI18nExtend==='function'
+        &&typeof base.refresh==='function'&&typeof base.locale==='function'){
+      var added=-1;
+      try{added=window.smartRetailI18nExtend(PAIRS);}catch(_){added=-1;}
+      if(added>=0){
+        var mirror=function(){try{document.documentElement.setAttribute('data-erp-language',base.locale());}catch(_){/* detached */}};
+        window.smartRetailErpI18nSupplement={version:53,mode:'merged',added:added,
+          groups:function(){return Object.fromEntries(Object.entries(GROUPS).map(function(entry){return [entry[0],entry[1].length];}));},
+          refresh:function(){return base.refresh();},
+          translate:function(value,target){return base.translate(value,target||base.locale());}};
+        window.addEventListener('smart-retail-language-change',mirror);
+        mirror();
+        if(base.locale()==='ru')base.refresh();
+        return;
+      }
+    }
+    install();
+  }
+  if(document.body)srCooperativeInstall();else document.addEventListener('DOMContentLoaded',srCooperativeInstall,{once:true});`;
+
+// Replace exactly-once helper: a changed vendor file must fail the build,
+// never ship half-patched.
+function mustReplaceOnce(source, needle, replacement, label) {
+  const count = source.split(needle).length - 1;
+  if (count !== 1) {
+    throw new Error(`i18n patch anchor "${label}" matched ${count} times (expected 1); the vendor i18n changed — re-verify before shipping.`);
+  }
+  return source.replace(needle, replacement);
+}
+
+function patchB64Const(appHtml, constName, transform) {
+  const pattern = new RegExp(`const ${constName} = "([^"]*)"`);
+  const match = appHtml.match(pattern);
+  if (!match) throw new Error(`${constName} was not found in the app HTML.`);
+  const decoded = Buffer.from(match[1], 'base64').toString('utf8');
+  const patched = transform(decoded);
+  const encoded = Buffer.from(patched, 'utf8').toString('base64');
+  return appHtml.replace(pattern, `const ${constName} = "${encoded}"`);
+}
+
+function patchI18n(appHtml) {
+  // Outer copy (plain text in the app HTML): extend API + deferred notify.
+  let output = mustReplaceOnce(appHtml, I18N_PATTERN_ANCHOR, I18N_EXTEND_CODE, 'outer pattern-build');
+  output = mustReplaceOnce(output, I18N_NOTIFY_ANCHOR, I18N_NOTIFY_DEFERRED, 'outer notifyRelatives');
+  // ERP base payload: the same two patches on its own copy of the engine.
+  output = patchB64Const(output, 'SMART_RETAIL_ERP_B64', (erp) => {
+    let body = mustReplaceOnce(erp, I18N_PATTERN_ANCHOR, I18N_EXTEND_CODE, 'erp pattern-build');
+    body = mustReplaceOnce(body, I18N_NOTIFY_ANCHOR, I18N_NOTIFY_DEFERRED, 'erp notifyRelatives');
+    return body;
+  });
+  // Supplement payload: merge-and-go-dormant bootstrap.
+  output = patchB64Const(output, 'SMART_RETAIL_ERP_I18N_53_B64', (supplement) =>
+    mustReplaceOnce(supplement, I18N_SUPPLEMENT_TAIL, I18N_SUPPLEMENT_COOPERATIVE, 'supplement bootstrap'));
+  return output;
+}
+
+html = patchI18n(html);
+
 const FILE_GUARD_PAYLOAD = 'SMART_RETAIL_ERP_FILE_UPLOAD_GUARD_B64';
 const FILE_GUARD_SLOW_SCAN = 'function scan(node){if(typeof document===\'undefined\')return;'
   + 'if(node&&node.nodeType===1&&node.matches?.(\'input[type="file"]\'))bindInput(node);'
@@ -238,6 +433,7 @@ console.log(JSON.stringify({
   erpPageBytes: Buffer.byteLength(erpHtml),
   erpModules: erpDocument.modules.length,
   fileUploadGuard: fileGuard.state,
+  i18nUnified: true,
   buildVersion,
   legacySyncRemoved: !html.includes('SMART_RETAIL_PARENT_SYNC_21_BEGIN'),
   authInjected: html.includes(HEAD_BEGIN),
