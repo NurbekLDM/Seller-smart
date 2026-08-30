@@ -56,10 +56,23 @@
 
   function client() { return window.smartRetailSupabase || null; }
 
+  /* Interface language belongs to the device, not the workspace. The i18n
+     module writes it straight to localStorage — never through saveState()
+     or db_set() — so the engine is never told it changed and never pushes
+     it. It then sits inside the synced key space with no entry on the
+     server, and the next boot's restore deletes it (absent from the
+     snapshot) or resets it to a stale value: the user picks RU, reloads,
+     and is back in Uzbek. Keeping it out of the snapshot fixes that and
+     lets a shop run its till and its office in different languages.
+     (srerp_theme does NOT belong here — it goes through db_set, so it is
+     pushed properly and syncing it is intentional.) */
+  var DEVICE_PREFERENCE = /^srerp_interface_language_v\d+$/;
+
   function permitted(key) {
     return typeof key === 'string'
       && /^srerp_[a-zA-Z0-9_-]{1,100}$/.test(key)
       && !key.startsWith('srerp_embedded_applied_')
+      && !DEVICE_PREFERENCE.test(key)
       // initialized/seeded markers are device-local: syncing or removing
       // them re-triggers the ERP's first-run store reset on other devices.
       && !/password|secret|credential|session|token|pin|auth_users|initialized|seeded/i.test(key);

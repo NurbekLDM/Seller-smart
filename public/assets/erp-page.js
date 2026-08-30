@@ -340,10 +340,16 @@
     } catch (_) { /* ignore */ }
   }
 
+  /* Interface language is a device preference, not workspace data — see
+     the same block in supabase-sync.js. Without this a till that its
+     cashier switched to Russian is back in Uzbek after every reload. */
+  var DEVICE_PREFERENCE = /^srerp_interface_language_v\d+$/;
+
   function permitted(key) {
     return typeof key === 'string'
       && /^srerp_[a-zA-Z0-9_-]{1,100}$/.test(key)
       && !key.startsWith('srerp_embedded_applied_')
+      && !DEVICE_PREFERENCE.test(key)
       && !/password|secret|credential|session|token|pin|auth_users|initialized|seeded/i.test(key);
   }
 
