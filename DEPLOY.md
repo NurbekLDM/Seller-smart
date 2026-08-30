@@ -28,6 +28,15 @@ Production architecture:
 
 1. Create a project at supabase.com (choose a strong database password; region: closest to the customer, e.g. `eu-central-1`).
 2. **SQL Editor → New query** → paste the whole `supabase/schema.sql` → Run.
+   The file is re-runnable, so re-paste and run it again whenever it changes
+   in the repository — the database is not updated by a deploy.
+
+   For an existing project, prefer the dated migration files next to it over
+   re-running the whole schema. Pending for the live project:
+   `supabase/2026-08-30-staff-write-guard.sql` — `save_app_state()` now forces
+   the owner's analytics half of the snapshot back to its stored value on a
+   staff write, so a tampered or stolen till cannot replace the whole
+   workspace. It redefines one function and touches no data.
 3. **Authentication → Sign In / Providers**: make sure Email is enabled and
    **disable "Allow new users to sign up"** — only the owner creates accounts.
 4. **Authentication → Users → Add user**: create the owner's account
@@ -66,6 +75,15 @@ Deactivate a user without deleting their data:
 
 Put the two values from step 1.6 into `public/assets/app-config.js`.
 (The anon key is safe in the browser — access is enforced by RLS.)
+
+**Also update the Content-Security-Policy** in `vercel.json` when the
+Supabase project changes: its `connect-src` names the project host
+explicitly (`https://<project>.supabase.co` and the `wss://` form). Miss
+this and the app loads but every database call is blocked. The rest of the
+policy lists the CDNs the ERP loads (jsDelivr, cdnjs, DataTables, unpkg)
+plus Google Fonts — a new CDN in a future vendor version needs adding
+there too.
+
 No rebuild needed for config changes; rebuild only if `src/app.html` changes:
 
 ```bash

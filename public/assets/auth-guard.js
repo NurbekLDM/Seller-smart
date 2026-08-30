@@ -38,6 +38,8 @@
   var MERGED_SESSION_KEY = 'uzum-analytics-merged-session-v3';
   var ACTIVE_USER_KEY = 'sr-active-user-id';
   var USERNAME_CACHE_KEY = 'sr-username';
+  // How long logout waits for the final sync push before giving up on it.
+  var LOGOUT_FLUSH_MS = 8000;
   var onLoginPage = /login/.test(window.location.pathname);
   var signingOut = false;
 
@@ -307,8 +309,11 @@
     setAuthCookie('', 0);
     purgeSupabaseStorage();
     clearInternalSession();
-    // Give an unsent sync flush a short window so the last change is not
-    // lost, but never block logout on a slow network.
+    // Give an unsent sync flush a window so the last change reaches the
+    // database, but never block logout indefinitely on a slow network.
+    // A failed flush resolves fast (the fetch errors), so in practice only
+    // a genuinely slow connection ever waits — which is exactly the case
+    // worth waiting for.
     var pendingFlush = Promise.resolve();
     try {
       var sync = window.smartRetailAnalyticsServerSync;
@@ -316,22 +321,39 @@
         pendingFlush = Promise.resolve(sync.flush()).catch(function () {});
       }
     } catch (_) { /* ignore */ }
-    var cap = new Promise(function (resolve) { window.setTimeout(resolve, 2500); });
+    var cap = new Promise(function (resolve) { window.setTimeout(resolve, LOGOUT_FLUSH_MS); });
     Promise.race([pendingFlush, cap]).then(function () {
+      /* Whether the flush actually landed decides what may be erased.
+         Auth material always goes. Workspace data only goes once the
+         database has it: wiping it after a flush that never completed
+         destroys the user's work with no copy anywhere. Data left behind
+         is still isolated — a different account signing in on this browser
+         wipes it (the sr-active-user-id check at boot), and the same
+         account picks the work back up and pushes it. */
+      var unsaved = false;
+      try {
+        var current = window.smartRetailAnalyticsServerSync;
+        var status = current && current.status ? current.status() : null;
+        unsaved = !!(status && status.active && status.pending);
+      } catch (_) { /* treat an unreadable status as saved */ }
+
       try { client.auth.signOut(); } catch (_) { /* fire-and-forget revocation */ }
       clearInternalSession();
-      wipeLocalStorageSync();
-      try { indexedDB.deleteDatabase('uzum-analytics-pro'); } catch (_) { /* ignore */ }
-      try {
-        localStorage.removeItem(ACTIVE_USER_KEY);
-        localStorage.removeItem(USERNAME_CACHE_KEY);
-        localStorage.removeItem('sr-erp-profile');
-        localStorage.removeItem('sr-ws-revision');
-        localStorage.removeItem('sr-conflict-backup');
-      } catch (_) { /* ignore */ }
       purgeSupabaseStorage();
       setAuthCookie('', 0);
-      window.location.replace('/login.html');
+
+      if (!unsaved) {
+        wipeLocalStorageSync();
+        try { indexedDB.deleteDatabase('uzum-analytics-pro'); } catch (_) { /* ignore */ }
+        try {
+          localStorage.removeItem(ACTIVE_USER_KEY);
+          localStorage.removeItem(USERNAME_CACHE_KEY);
+          localStorage.removeItem('sr-erp-profile');
+          localStorage.removeItem('sr-ws-revision');
+          localStorage.removeItem('sr-conflict-backup');
+        } catch (_) { /* ignore */ }
+      }
+      window.location.replace(unsaved ? '/login.html?unsaved=1' : '/login.html');
     });
   }
   window.smartRetailSignOut = signOutAndRedirect;

@@ -21,6 +21,8 @@
   var ACTIVE_USER_KEY = 'sr-active-user-id';
   var ERP_PROFILE_KEY = 'sr-erp-profile';
   var ANALYTICS_KEY = 'srerp_analytics_parent_state';
+  // How long logout waits for the final sync push before giving up on it.
+  var LOGOUT_FLUSH_MS = 8000;
   var signingOut = false;
 
   function setAuthCookie(token, maxAgeSeconds) {
@@ -238,9 +240,18 @@
     } catch (_) { /* ignore */ }
     var pendingFlush = Promise.resolve();
     try { if (syncActive) pendingFlush = flush().catch(function () {}); } catch (_) { /* ignore */ }
-    var cap = new Promise(function (resolve) { window.setTimeout(resolve, 2500); });
+    var cap = new Promise(function (resolve) { window.setTimeout(resolve, LOGOUT_FLUSH_MS); });
     Promise.race([pendingFlush, cap]).then(function () {
       try { client.auth.signOut(); } catch (_) { /* fire and forget */ }
+      /* Auth material is always gone by now. The shift's data may only be
+         erased once the database actually has it — wiping a till whose
+         last push never landed destroys those sales with no copy left.
+         What stays behind is still isolated: a different account signing
+         in on this terminal wipes it, and the same account resends it. */
+      if (pending) {
+        window.location.replace('/login.html?unsaved=1');
+        return;
+      }
       wipeLocalWorkspace();
       try {
         localStorage.removeItem(ACTIVE_USER_KEY);
@@ -283,6 +294,27 @@
   var carried = {};   // snapshot entries this page cannot regenerate (analytics)
   var statusChip = null;
   var WS_REVISION_KEY = 'sr-ws-revision';
+  var PENDING_KEY = 'sr-pending-changes';
+  var pending = false;
+
+  /* Unsent-change marker — see the same block in supabase-sync.js. A till
+     that loses its connection mid-shift keeps its sales here; without this
+     the next boot restores the older server snapshot straight over them. */
+  function markPending() {
+    if (pending) return;
+    pending = true;
+    try { localStorage.setItem(PENDING_KEY, String(revision)); } catch (_) { /* ignore */ }
+  }
+  function clearPending() {
+    pending = false;
+    try { localStorage.removeItem(PENDING_KEY); } catch (_) { /* ignore */ }
+  }
+  function pendingBaseline() {
+    try {
+      var raw = localStorage.getItem(PENDING_KEY);
+      return raw === null ? null : (Number(raw) || 0);
+    } catch (_) { return null; }
+  }
 
   // The workspace version is shared across tabs so a second tab never
   // pushes with a stale expected_version (guaranteed conflict otherwise).
@@ -369,6 +401,7 @@
       revision = Number(data.version) || 0;
       publishRevision();
       restore(data.snapshot || {});
+      clearPending(); // local now mirrors the server; the divergence is in the backup
       announce('online', 'Boshqa qurilmadagi o‘zgarishlar yuklandi · v' + revision);
     } catch (_) {
       delayed = true;
@@ -391,6 +424,7 @@
       }
       revision = Number(result.data) || revision + 1;
       publishRevision();
+      clearPending(); // the database now holds everything this terminal has
       announce('online', 'Saqlandi · v' + revision);
     } catch (error) {
       var message = String(error.message || '');
@@ -411,6 +445,7 @@
 
   function notify() {
     if (!syncActive || applying) return;
+    markPending();
     window.clearTimeout(timer);
     timer = window.setTimeout(flush, 900);
   }
@@ -505,11 +540,35 @@
           }).then(function (stateResult) {
             if (stateResult.error) throw new Error(stateResult.error.message || 'read failed');
             var data = stateResult.data || { version: 0, snapshot: {} };
-            revision = Number(data.version) || 0;
-            publishRevision();
-            if (revision && data.snapshot && Object.keys(data.snapshot).length) restore(data.snapshot);
-            syncActive = true;
-            announce('online', revision ? 'Ulangan · v' + revision : 'Ulangan');
+            var serverVersion = Number(data.version) || 0;
+            var baseline = pendingBaseline();
+            /* Work this terminal never managed to send (connection dropped
+               mid-shift, tab closed, machine slept) must not be erased by
+               the older server snapshot — decide which side is newer. */
+            if (baseline !== null && serverVersion === baseline) {
+              // Nothing was written elsewhere: this terminal holds the
+              // newest state. Keep it and push it up.
+              revision = serverVersion;
+              publishRevision();
+              pending = true;
+              syncActive = true;
+              announce('syncing', 'Saqlanmagan o‘zgarishlar yuborilmoqda...');
+              notify();
+            } else {
+              if (baseline !== null && serverVersion > baseline) {
+                // Another device wrote while this one was offline: the
+                // server wins, but keep the divergent state recoverable.
+                try {
+                  localStorage.setItem('sr-conflict-backup', JSON.stringify({ at: new Date().toISOString(), snapshot: collect() }));
+                } catch (_) { /* backup is best-effort */ }
+              }
+              clearPending();
+              revision = serverVersion;
+              publishRevision();
+              if (revision && data.snapshot && Object.keys(data.snapshot).length) restore(data.snapshot);
+              syncActive = true;
+              announce('online', revision ? 'Ulangan · v' + revision : 'Ulangan');
+            }
             tryUnlock();
             // Only reconcile employees AFTER the initial restore has landed —
             // running it concurrently let restore()'s server snapshot

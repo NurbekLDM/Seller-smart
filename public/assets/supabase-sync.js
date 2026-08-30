@@ -10,8 +10,32 @@
 
   var ANALYTICS_KEY = 'srerp_analytics_parent_state';
   var WS_REVISION_KEY = 'sr-ws-revision';
+  var PENDING_KEY = 'sr-pending-changes';
   var revision = 0;
   var active = false;
+  var pending = false;
+
+  /* Unsent-change marker, persisted so it survives a reload, a crash or a
+     closed laptop. Without it the boot restore below cannot tell "this
+     device is behind the database" from "this device holds work the
+     database never received", and silently overwrites the second case
+     with the older server snapshot. The value is the server version the
+     unsent work was built on. */
+  function markPending() {
+    if (pending) return;
+    pending = true;
+    try { localStorage.setItem(PENDING_KEY, String(revision)); } catch (_) { /* ignore */ }
+  }
+  function clearPending() {
+    pending = false;
+    try { localStorage.removeItem(PENDING_KEY); } catch (_) { /* ignore */ }
+  }
+  function pendingBaseline() {
+    try {
+      var raw = localStorage.getItem(PENDING_KEY);
+      return raw === null ? null : (Number(raw) || 0);
+    } catch (_) { return null; }
+  }
 
   // Workspace version shared across tabs/pages (the staff ERP page uses the
   // same key), so no writer pushes with a stale expected_version.
@@ -122,6 +146,7 @@
       revision = Number(data.version) || 0;
       publishRevision();
       await restore(data.snapshot || {});
+      clearPending(); // local now mirrors the server; the divergence is in the backup
       announce('online', 'Boshqa qurilmadagi o‘zgarishlar yuklandi · v' + revision);
     } catch (_) {
       delayed = true;
@@ -147,6 +172,7 @@
       }
       revision = Number(result.data) || revision + 1;
       publishRevision();
+      clearPending(); // the database now holds everything this device has
       announce('online', 'Bazada saqlandi · v' + revision);
     } catch (error) {
       var message = String(error.message || '');
@@ -171,6 +197,7 @@
 
   function notify() {
     if (!active || applying) return;
+    markPending();
     window.clearTimeout(timeout);
     timeout = window.setTimeout(flush, 900);
   }
@@ -184,11 +211,14 @@
       callback(active ? 'online' : 'local', active ? 'Baza bilan ulangan · v' + revision : 'Bazaga ulanish tekshirilmoqda');
       return function () { subscribers.delete(callback); };
     },
-    status: function () { return { active: active, revision: revision, busy: busy }; },
+    // `pending` is true while this device holds changes the database has
+    // not accepted yet — logout checks it before wiping local data.
+    status: function () { return { active: active, revision: revision, busy: busy, pending: pending }; },
     reload: async function () {
       var data = await readServerState();
       revision = Number(data.version) || 0;
       await restore(data.snapshot || {});
+      clearPending();
       active = true;
       announce('online', 'Bazadan tiklandi · v' + revision);
       return revision;
@@ -309,9 +339,36 @@
       var isOwner = !profile.workspace_owner;
 
       var data = await readServerState();
-      revision = Number(data.version) || 0;
-      publishRevision();
-      if (revision && data.snapshot && Object.keys(data.snapshot).length) await restore(data.snapshot);
+      var serverVersion = Number(data.version) || 0;
+      var baseline = pendingBaseline();
+
+      /* A previous session left work that never reached the database (the
+         network dropped, the tab was closed, the machine slept). Restoring
+         the server snapshot on top of it would destroy exactly that work,
+         so decide which side is actually newer first. */
+      if (baseline !== null && serverVersion === baseline) {
+        // Nobody has written since this device went offline: what is on
+        // this device IS the newest state. Keep it and push it up.
+        revision = serverVersion;
+        publishRevision();
+        pending = true;
+        active = true;
+        announce('syncing', 'Saqlanmagan o‘zgarishlar yuborilmoqda...');
+        notify();
+      } else {
+        if (baseline !== null && serverVersion > baseline) {
+          // Another device wrote while this one was offline. The server
+          // snapshot wins (as it always has), but never silently: keep the
+          // divergent local state so it can still be recovered.
+          try {
+            localStorage.setItem('sr-conflict-backup', JSON.stringify({ at: new Date().toISOString(), snapshot: collect() }));
+          } catch (_) { /* backup is best-effort */ }
+        }
+        clearPending();
+        revision = serverVersion;
+        publishRevision();
+        if (revision && data.snapshot && Object.keys(data.snapshot).length) await restore(data.snapshot);
+      }
 
       if (typeof saveState === 'function') {
         var original = saveState;
@@ -355,7 +412,9 @@
       if (isOwner) {
         try { initVersionPanel(); } catch (error) { console.warn('Version panel unavailable:', error.message); }
       }
-      announce('online', revision ? 'Baza bilan ulangan · v' + revision : 'Baza bilan ulangan');
+      // A recovery push is already announced and in flight — leave its
+      // message up rather than reporting a clean connection over it.
+      if (!pending) announce('online', revision ? 'Baza bilan ulangan · v' + revision : 'Baza bilan ulangan');
       if (!revision) notify();
     } catch (error) {
       console.warn('Supabase synchronization unavailable:', error.message);
