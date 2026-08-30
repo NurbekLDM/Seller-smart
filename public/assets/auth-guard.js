@@ -86,6 +86,17 @@
     } catch (_) { /* ignore */ }
   }
 
+  /* Every browser key the app itself owns. The app has never used one
+     prefix: alongside "srerp_" and "uzum-analytics-", the v26 modules
+     write "uzum_analytics_" (YATT tax profile), "uzum_market_" (Academy
+     results) and "uzum-sales-" (dashboard period). A two-prefix check
+     left those behind, so the next account signing in on the same
+     browser inherited the previous owner's tax profile and settings.
+     Our own bookkeeping ("sr-", "sb-") is cleared separately. */
+  function isWorkspaceKey(key) {
+    return typeof key === 'string' && /^(srerp_|uzum[-_])/.test(key);
+  }
+
   // Removes all app data (ERP + analytics) from this browser. Synchronous
   // for localStorage; the IndexedDB delete is queued before the app's own
   // open request, so the app always boots against a clean database.
@@ -94,13 +105,13 @@
       var doomed = [];
       for (var index = 0; index < localStorage.length; index += 1) {
         var key = localStorage.key(index);
-        if (key && (key.indexOf('srerp_') === 0 || key.indexOf('uzum-analytics-') === 0)) doomed.push(key);
+        if (isWorkspaceKey(key)) doomed.push(key);
       }
       doomed.forEach(function (key) { localStorage.removeItem(key); });
       var doomedSession = [];
       for (var position = 0; position < sessionStorage.length; position += 1) {
         var sessionKey = sessionStorage.key(position);
-        if (sessionKey && sessionKey.indexOf('srerp_') === 0) doomedSession.push(sessionKey);
+        if (isWorkspaceKey(sessionKey)) doomedSession.push(sessionKey);
       }
       doomedSession.forEach(function (key) { sessionStorage.removeItem(key); });
     } catch (_) { /* ignore */ }

@@ -14,8 +14,9 @@ Production architecture:
 | Path | Purpose |
 | --- | --- |
 | `src/app.html` | Source of truth — the original customer HTML. Never edited by hand for auth/sync. |
-| `scripts/build.mjs` | Builds `public/index.html` from the source (removes legacy VPS sync, injects Supabase auth + sync). Run with `npm run build`. |
+| `scripts/build.mjs` | Builds `public/index.html` from the source (removes legacy VPS sync, injects Supabase auth + sync), and assembles `public/erp.html`. Run with `npm run build`. |
 | `public/index.html` | Built app (generated — do not edit directly). |
+| `public/erp.html` | Built standalone ERP page (generated). Assembled the way the app's own `getSmartRetailErpHtml()` does it: the base ERP payload plus every separately Base64-encoded feature module the app appends to it, so the staff page and the embedded frame always ship the same ERP. |
 | `public/login.html` | Real login page (Supabase Auth, email + password). |
 | `public/assets/app-config.js` | **Fill in** the Supabase URL + anon key here. |
 | `public/assets/auth-guard.js` | In-page guard: redirects to login, keeps session cookie fresh. |

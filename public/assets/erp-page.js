@@ -57,18 +57,26 @@
     } catch (_) { /* ignore */ }
   }
 
+  /* Matches every browser key the app owns — see the same predicate in
+     auth-guard.js: the v26 modules added "uzum_analytics_", "uzum_market_"
+     and "uzum-sales-" keys that a two-prefix check left behind for the
+     next account on this browser. */
+  function isWorkspaceKey(key) {
+    return typeof key === 'string' && /^(srerp_|uzum[-_])/.test(key);
+  }
+
   function wipeLocalWorkspace() {
     try {
       var doomed = [];
       for (var index = 0; index < localStorage.length; index += 1) {
         var key = localStorage.key(index);
-        if (key && (key.indexOf('srerp_') === 0 || key.indexOf('uzum-analytics-') === 0)) doomed.push(key);
+        if (isWorkspaceKey(key)) doomed.push(key);
       }
       doomed.forEach(function (key) { localStorage.removeItem(key); });
       var doomedSession = [];
       for (var position = 0; position < sessionStorage.length; position += 1) {
         var sessionKey = sessionStorage.key(position);
-        if (sessionKey && sessionKey.indexOf('srerp_') === 0) doomedSession.push(sessionKey);
+        if (isWorkspaceKey(sessionKey)) doomedSession.push(sessionKey);
       }
       doomedSession.forEach(function (key) { sessionStorage.removeItem(key); });
       indexedDB.deleteDatabase('uzum-analytics-pro');

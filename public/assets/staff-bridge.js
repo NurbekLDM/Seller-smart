@@ -20,6 +20,41 @@
 (function smartRetailStaffBridge() {
   'use strict';
 
+  /* Every ERP 26 screen registers itself in AUTH_V12_VIEWS — the list the
+     Employees screen builds its permission checkboxes from — except
+     "Sotuvlar tarixi" (sales history), which only pushes itself into the
+     built-in POS role. Our staff accounts are always role CUSTOM with an
+     explicit permission array, so without a checkbox the owner has no way
+     to grant it and the screen is invisible to every employee. Register
+     it the same way the vendor's other modules do; switchView/authCanView
+     then honour it with no further changes. */
+  function registerSalesHistoryPermission() {
+    try {
+      if (typeof AUTH_V12_VIEWS === 'undefined' || !Array.isArray(AUTH_V12_VIEWS)) return false;
+      // Only offer it once the module that owns the screen has installed.
+      if (!document.getElementById('view-saleshistory')) return false;
+      if (AUTH_V12_VIEWS.some(function (view) { return view && view.id === 'saleshistory'; })) return true;
+      var after = AUTH_V12_VIEWS.findIndex(function (view) { return view && view.id === 'pos'; });
+      AUTH_V12_VIEWS.splice(after < 0 ? AUTH_V12_VIEWS.length : after + 1, 0, {
+        id: 'saleshistory',
+        label: 'Sotuvlar tarixi',
+        desc: 'Buyurtma, to‘lov va qaytarishlar tarixi'
+      });
+      return true;
+    } catch (_) { return false; }
+  }
+
+  // The sales-history module installs at its own DOMContentLoaded, which
+  // may land after this file's; poll briefly rather than racing it.
+  function armSalesHistoryPermission() {
+    var attempts = 0;
+    (function attempt() {
+      if (registerSalesHistoryPermission()) return;
+      attempts += 1;
+      if (attempts < 40) window.setTimeout(attempt, 250);
+    })();
+  }
+
   window.smartRetailInstallStaffBridge = function (resolveHost) {
     if (window.__srEmployeeHookInstalled) return window.__srStaffBridgeReconcile || null;
     window.__srEmployeeHookInstalled = true;
@@ -323,6 +358,14 @@
     })();
   }
 
-  if (document.readyState !== 'loading') embeddedBootstrap();
-  else document.addEventListener('DOMContentLoaded', embeddedBootstrap, { once: true });
+  function bootstrap() {
+    // Runs in every context and for every role: the picker list is shared
+    // state, and an employee's own window needs the id registered too so
+    // authV12AvailableViews() can resolve its label.
+    armSalesHistoryPermission();
+    embeddedBootstrap();
+  }
+
+  if (document.readyState !== 'loading') bootstrap();
+  else document.addEventListener('DOMContentLoaded', bootstrap, { once: true });
 })();

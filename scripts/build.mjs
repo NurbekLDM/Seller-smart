@@ -45,6 +45,7 @@ const headBlock = `\n${HEAD_BEGIN}\n` +
   '<script src="assets/app-config.js"></script>\n' +
   '<script src="assets/vendor/supabase.js"></script>\n' +
   '<script src="assets/auth-guard.js"></script>\n' +
+  '<script src="assets/analytics-windows.js"></script>\n' +
   '<script src="assets/version-check.js"></script>\n' +
   `${HEAD_END}\n`;
 const headIndex = headMatch.index + headMatch[0].length;
@@ -73,14 +74,118 @@ if (closingBody < 0) throw new Error('HTML source is missing its closing </body>
 const bodyBlock = `\n${BODY_BEGIN}\n<script src="assets/supabase-sync.js"></script>\n${BODY_END}\n`;
 html = html.slice(0, closingBody).replace(/\n+$/, '\n') + bodyBlock + html.slice(closingBody);
 
+/* The ERP 26 file-upload guard installs a MutationObserver that calls its
+   scan() once per added node, and scan() falls back to a WHOLE-DOCUMENT
+   querySelectorAll whenever the node it is handed has no querySelectorAll
+   of its own — which is every text node. The ERP's first render adds
+   thousands of text nodes, so the guard sweeps the entire (3 MB) document
+   thousands of times and the main thread never comes back: the ERP simply
+   never finishes loading, in the embedded frame and on the staff page
+   alike. Confining that fallback to the explicit scan(document) call keeps
+   the guard's behaviour and takes the load from "never" back to ~8s.
+   Patched in the payload itself, before the ERP document is assembled, so
+   the frame, the "open in a new window" popup and public/erp.html all get
+   the fix from one place. Measured with headless Chrome: unpatched >120s
+   (timeout), patched 8s. */
+const FILE_GUARD_PAYLOAD = 'SMART_RETAIL_ERP_FILE_UPLOAD_GUARD_B64';
+const FILE_GUARD_SLOW_SCAN = 'function scan(node){if(typeof document===\'undefined\')return;'
+  + 'if(node&&node.nodeType===1&&node.matches?.(\'input[type="file"]\'))bindInput(node);'
+  + '(node&&node.querySelectorAll?node:document).querySelectorAll?.(\'input[type="file"]\').forEach(bindInput);}';
+const FILE_GUARD_SCOPED_SCAN = 'function scan(node){if(typeof document===\'undefined\')return;'
+  + 'if(node&&node.nodeType===1&&node.matches?.(\'input[type="file"]\'))bindInput(node);'
+  + 'const scope=node?(node.querySelectorAll?node:null):document;'
+  + 'if(scope)scope.querySelectorAll(\'input[type="file"]\').forEach(bindInput);}';
+
+function patchFileUploadGuard(appHtml) {
+  const pattern = new RegExp(`const ${FILE_GUARD_PAYLOAD} = "([^"]*)"`);
+  const match = appHtml.match(pattern);
+  if (!match) return { html: appHtml, state: 'absent' };
+
+  const guard = Buffer.from(match[1], 'base64').toString('utf8');
+  if (!guard.includes(FILE_GUARD_SLOW_SCAN)) {
+    // Nothing to patch is only safe if the pathological fallback is gone.
+    if (guard.includes(':document).querySelectorAll')) {
+      throw new Error(`${FILE_GUARD_PAYLOAD} still sweeps the whole document per mutation but no longer matches the known shape; re-check its scan() before shipping.`);
+    }
+    return { html: appHtml, state: 'unchanged' };
+  }
+
+  const patched = guard.replace(FILE_GUARD_SLOW_SCAN, FILE_GUARD_SCOPED_SCAN);
+  const encoded = Buffer.from(patched, 'utf8').toString('base64');
+  return {
+    html: appHtml.replace(pattern, `const ${FILE_GUARD_PAYLOAD} = "${encoded}"`),
+    state: 'patched'
+  };
+}
+
+const fileGuard = patchFileUploadGuard(html);
+html = fileGuard.html;
+
 writeFileSync(outputFile, html);
 
 // ---- standalone ERP page (public/erp.html) for ERP staff accounts ------
 // Decoded from the embedded payload; gets its own guard + workspace sync.
+//
+// The app does NOT ship the ERP as one payload: getSmartRetailErpHtml()
+// assembles it at runtime from the base payload plus a list of separately
+// Base64-encoded feature modules (Uzum waybill, import orders, supplier
+// orders, POS/warehouse mobile, utilization, journal, ERP i18n, ...)
+// appended before </body>. Decoding only the base payload would ship the
+// staff page ~950 KB of features short of the embedded frame, so mirror
+// the app's own assembly by reading that function's declarations instead
+// of hard-coding the module list — a vendor upgrade that adds another
+// module is then picked up automatically.
+function buildErpDocument(appHtml) {
+  const payloads = new Map();
+  for (const match of appHtml.matchAll(/const (SMART_RETAIL_[A-Z0-9_]+_B64) = "([^"]*)"/g)) {
+    payloads.set(match[1], match[2]);
+  }
+  const basePayload = payloads.get('SMART_RETAIL_ERP_B64');
+  if (!basePayload) throw new Error('Embedded ERP payload was not found in the app HTML.');
+  const baseHtml = Buffer.from(basePayload, 'base64').toString('utf8');
+
+  const functionStart = appHtml.indexOf('function getSmartRetailErpHtml()');
+  if (functionStart < 0) throw new Error('getSmartRetailErpHtml() was not found in the app HTML.');
+  const scope = appHtml.slice(functionStart);
+  const injected = scope.match(/const injectedModules = ([^;]+);/);
+  // Older app bases (v23 and earlier) embed the ERP as a single payload.
+  if (!injected) return { erpHtml: baseHtml, modules: [] };
+
+  // `const <name>Binary = atob(<CONST>);` pairs each `<name>Html` local
+  // with the payload it decodes.
+  const sources = new Map();
+  for (const match of scope.slice(0, injected.index).matchAll(/const (\w+)Binary = atob\((SMART_RETAIL_[A-Z0-9_]+_B64)\)/g)) {
+    sources.set(`${match[1]}Html`, match[2]);
+  }
+  // Generated inline by the app rather than decoded: a bridge that
+  // postMessages the parent frame when the ERP has finished loading.
+  // The standalone page has no parent, so it is left out on purpose.
+  const generatedInline = new Set(['readyBridgeHtml']);
+
+  const modules = [];
+  const parts = [];
+  for (const match of injected[1].matchAll(/\b(\w+Html)\b/g)) {
+    const local = match[1];
+    if (generatedInline.has(local)) continue;
+    const payloadName = sources.get(local);
+    if (!payloadName) throw new Error(`ERP module "${local}" has no decodable payload; build.mjs needs updating.`);
+    const payload = payloads.get(payloadName);
+    if (!payload) throw new Error(`ERP module payload ${payloadName} is missing from the app HTML.`);
+    modules.push(payloadName);
+    parts.push(Buffer.from(payload, 'base64').toString('utf8'));
+  }
+
+  const block = parts.join('\n');
+  const closing = baseHtml.toLowerCase().lastIndexOf('</body>');
+  const assembled = closing >= 0
+    ? baseHtml.slice(0, closing) + block + '\n' + baseHtml.slice(closing)
+    : `${baseHtml}\n${block}`;
+  return { erpHtml: assembled, modules };
+}
+
 const erpOutputFile = resolve(root, 'public/erp.html');
-const b64Match = html.match(/const SMART_RETAIL_ERP_B64 = "([^"]+)"/);
-if (!b64Match) throw new Error('Embedded ERP payload was not found in the app HTML.');
-let erpHtml = Buffer.from(b64Match[1], 'base64').toString('utf8');
+const erpDocument = buildErpDocument(html);
+let erpHtml = erpDocument.erpHtml;
 
 const erpHeadMatch = erpHtml.match(/<head[^>]*>/i);
 if (!erpHeadMatch) throw new Error('ERP HTML is missing a <head> tag.');
@@ -119,6 +224,8 @@ console.log(JSON.stringify({
   output: 'public/index.html',
   bytes: Buffer.byteLength(html),
   erpPageBytes: Buffer.byteLength(erpHtml),
+  erpModules: erpDocument.modules.length,
+  fileUploadGuard: fileGuard.state,
   buildVersion,
   legacySyncRemoved: !html.includes('SMART_RETAIL_PARENT_SYNC_21_BEGIN'),
   authInjected: html.includes(HEAD_BEGIN),
