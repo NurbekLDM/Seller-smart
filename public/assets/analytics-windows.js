@@ -1,4 +1,13 @@
-/* "Uzum Market Akademiyasi" and "PRO AI tahlil" open in their own browser
+/* CURRENTLY DISABLED — build.mjs does not inject this file.
+
+   Opening these views in their own tab boots a SECOND full instance of the
+   6.8 MB application page (measured ~7.5s cold boot on a fast desktop; far
+   worse on a modest laptop, where it froze the browser). The feature is
+   sound, the page is simply too heavy to run twice. Re-enable the injection
+   in scripts/build.mjs once the base64 payloads (43% of index.html) load on
+   demand, so a second window costs kilobytes rather than megabytes.
+
+   "Uzum Market Akademiyasi" and "PRO AI tahlil" open in their own browser
    tab instead of taking over the main page, so the analytics workspace
    stays open behind them.
 

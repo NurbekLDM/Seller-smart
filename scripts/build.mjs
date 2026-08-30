@@ -45,7 +45,12 @@ const headBlock = `\n${HEAD_BEGIN}\n` +
   '<script src="assets/app-config.js"></script>\n' +
   '<script src="assets/vendor/supabase.js"></script>\n' +
   '<script src="assets/auth-guard.js"></script>\n' +
-  '<script src="assets/analytics-windows.js"></script>\n' +
+  // assets/analytics-windows.js is deliberately NOT injected: opening
+  // "Uzum Market Akademiyasi" / "PRO AI tahlil" in their own tab boots a
+  // SECOND full instance of this 6.8 MB page (~7.5s cold boot on a fast
+  // desktop), which froze the app on the customer's laptop. The file is
+  // kept, unchanged, to be re-enabled once the base64 payloads move out of
+  // the HTML and a new tab costs kilobytes instead of megabytes.
   '<script src="assets/proai-i18n.js"></script>\n' +
   '<script src="assets/version-check.js"></script>\n' +
   `${HEAD_END}\n`;

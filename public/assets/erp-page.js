@@ -192,6 +192,7 @@
       localStorage.removeItem('sr-username');
       localStorage.removeItem('sr-ws-revision');
       localStorage.removeItem('sr-conflict-backup');
+      localStorage.removeItem(PENDING_KEY);
       localStorage.setItem(ACTIVE_USER_KEY, stored.id);
     } catch (_) { /* ignore */ }
   }
@@ -229,11 +230,17 @@
       overlay.innerHTML = '<style>@keyframes srSpin{to{transform:rotate(360deg)}}</style><div style="text-align:center"><div style="width:44px;height:44px;margin:0 auto 14px;border-radius:50%;border:3px solid rgba(120,110,255,.25);border-top-color:#786eff;animation:srSpin 1s linear infinite"></div>Chiqilmoqda...</div>';
       (document.body || document.documentElement).appendChild(overlay);
     } catch (_) { /* ignore */ }
-    // Kill auth material FIRST (synchronously): closing the tab mid-logout
-    // must never leave a usable session on a shared machine. The final
-    // flush still works — supabase-js keeps the session in memory.
+    /* Lock the terminal immediately: the cookie the middleware checks and
+       the ERP's own per-tab session both go now, so nobody can pick this
+       till up mid-logout.
+
+       The supabase-js session is NOT purged here. It lives only in the
+       `sb-*-auth-token` localStorage entry — the vendored client re-reads
+       it on every request — so purging first made the farewell push
+       authenticate as `anon`, RLS rejected it, and the shift's last sales
+       could never reach the database. It is purged below, after the push
+       has had its chance. */
     setAuthCookie('', 0);
-    purgeSupabaseStorage();
     try {
       sessionStorage.removeItem('srerp_auth_session_v6');
       sessionStorage.removeItem('srerp_analytics_erp_access_v22');
@@ -242,7 +249,9 @@
     try { if (syncActive) pendingFlush = flush().catch(function () {}); } catch (_) { /* ignore */ }
     var cap = new Promise(function (resolve) { window.setTimeout(resolve, LOGOUT_FLUSH_MS); });
     Promise.race([pendingFlush, cap]).then(function () {
+      // Revoke server-side while the session is still readable, then purge.
       try { client.auth.signOut(); } catch (_) { /* fire and forget */ }
+      purgeSupabaseStorage();
       /* Auth material is always gone by now. The shift's data may only be
          erased once the database actually has it — wiping a till whose
          last push never landed destroys those sales with no copy left.
@@ -259,6 +268,7 @@
         localStorage.removeItem('sr-username');
         localStorage.removeItem('sr-ws-revision');
         localStorage.removeItem('sr-conflict-backup');
+        localStorage.removeItem(PENDING_KEY);
       } catch (_) { /* ignore */ }
       window.location.replace('/login.html');
     });
@@ -296,14 +306,22 @@
   var WS_REVISION_KEY = 'sr-ws-revision';
   var PENDING_KEY = 'sr-pending-changes';
   var pending = false;
+  var pendingSeq = 0;
 
   /* Unsent-change marker — see the same block in supabase-sync.js. A till
      that loses its connection mid-shift keeps its sales here; without this
-     the next boot restores the older server snapshot straight over them. */
+     the next boot restores the older server snapshot straight over them.
+     The account id is stored with it: staff and owner share ONE app_state
+     row, so a marker a staff member left behind would otherwise match the
+     owner's server version exactly and make the owner's boot push a wiped
+     key space over the whole workspace. */
   function markPending() {
-    if (pending) return;
     pending = true;
-    try { localStorage.setItem(PENDING_KEY, String(revision)); } catch (_) { /* ignore */ }
+    pendingSeq += 1;
+    // Always (re)write — another tab may have cleared the shared key.
+    try {
+      localStorage.setItem(PENDING_KEY, JSON.stringify({ u: stored ? stored.id : '', v: revision }));
+    } catch (_) { /* ignore */ }
   }
   function clearPending() {
     pending = false;
@@ -312,7 +330,12 @@
   function pendingBaseline() {
     try {
       var raw = localStorage.getItem(PENDING_KEY);
-      return raw === null ? null : (Number(raw) || 0);
+      if (raw === null) return null;
+      var parsed = JSON.parse(raw);
+      // A bare number is the pre-namespacing format: unattributable, ignore it.
+      if (!parsed || typeof parsed !== 'object') return null;
+      if (String(parsed.u || '') !== String(stored ? stored.id : '')) return null;
+      return Number(parsed.v) || 0;
     } catch (_) { return null; }
   }
 
@@ -419,6 +442,7 @@
     if (!syncActive || applying) return;
     if (busy) { delayed = true; return; }
     busy = true;
+    var flushedSeq = pendingSeq; // changes arriving mid-RPC are not covered
     announce('syncing', 'Saqlanmoqda...');
     try {
       adoptSharedRevision();
@@ -430,7 +454,7 @@
       }
       revision = Number(result.data) || revision + 1;
       publishRevision();
-      clearPending(); // the database now holds everything this terminal has
+      if (pendingSeq === flushedSeq) clearPending();
       announce('online', 'Saqlandi · v' + revision);
     } catch (error) {
       var message = String(error.message || '');
@@ -556,6 +580,14 @@
               // newest state. Keep it and push it up.
               revision = serverVersion;
               publishRevision();
+              /* restore() is deliberately skipped here, but it is also what
+                 normally fills `carried` — the owner's analytics entry that
+                 this page never edits and must hand back untouched. Without
+                 this the recovery push would drop it from the workspace. */
+              carried = {};
+              if (data.snapshot && typeof data.snapshot[ANALYTICS_KEY] === 'string') {
+                carried[ANALYTICS_KEY] = data.snapshot[ANALYTICS_KEY];
+              }
               pending = true;
               syncActive = true;
               announce('syncing', 'Saqlanmagan o‘zgarishlar yuborilmoqda...');

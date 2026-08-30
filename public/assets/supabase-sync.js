@@ -14,17 +14,29 @@
   var revision = 0;
   var active = false;
   var pending = false;
+  var pendingSeq = 0;      // bumped per change; guards the clear below
+  var workspaceUser = '';  // the account this marker belongs to
 
   /* Unsent-change marker, persisted so it survives a reload, a crash or a
      closed laptop. Without it the boot restore below cannot tell "this
      device is behind the database" from "this device holds work the
      database never received", and silently overwrites the second case
-     with the older server snapshot. The value is the server version the
-     unsent work was built on. */
+     with the older server snapshot.
+
+     It records the account id alongside the server version the unsent work
+     was built on. The id is essential: a bare version number means nothing
+     outside the workspace that wrote it, and a marker left by the previous
+     user could match the NEXT user's server version, skip their restore
+     and push a freshly wiped key space over their workspace. */
   function markPending() {
-    if (pending) return;
     pending = true;
-    try { localStorage.setItem(PENDING_KEY, String(revision)); } catch (_) { /* ignore */ }
+    pendingSeq += 1;
+    // Always (re)write, never short-circuit on the in-memory flag: another
+    // tab may have removed the shared key after ITS successful flush while
+    // this tab still holds changes of its own.
+    try {
+      localStorage.setItem(PENDING_KEY, JSON.stringify({ u: workspaceUser, v: revision }));
+    } catch (_) { /* ignore */ }
   }
   function clearPending() {
     pending = false;
@@ -33,7 +45,12 @@
   function pendingBaseline() {
     try {
       var raw = localStorage.getItem(PENDING_KEY);
-      return raw === null ? null : (Number(raw) || 0);
+      if (raw === null) return null;
+      var parsed = JSON.parse(raw);
+      // A bare number is the pre-namespacing format: unattributable, ignore it.
+      if (!parsed || typeof parsed !== 'object') return null;
+      if (String(parsed.u || '') !== String(workspaceUser || '')) return null;
+      return Number(parsed.v) || 0;
     } catch (_) { return null; }
   }
 
@@ -171,6 +188,8 @@
     if (!active || applying) return;
     if (busy) { delayed = true; return; }
     busy = true;
+    // Changes that land while the RPC is in flight are NOT covered by it.
+    var flushedSeq = pendingSeq;
     announce('syncing', 'Bazaga saqlanmoqda...');
     try {
       adoptSharedRevision();
@@ -185,7 +204,9 @@
       }
       revision = Number(result.data) || revision + 1;
       publishRevision();
-      clearPending(); // the database now holds everything this device has
+      // Only if no further change arrived while that RPC was in flight —
+      // otherwise the newer edit would lose its protection.
+      if (pendingSeq === flushedSeq) clearPending();
       announce('online', 'Bazada saqlandi · v' + revision);
     } catch (error) {
       var message = String(error.message || '');
@@ -335,6 +356,7 @@
     try {
       var session = await window.smartRetailAuthReady;
       if (!session) return;
+      workspaceUser = session.user.id; // must precede any pendingBaseline() read
 
       var profileResult = await client().from('profiles').select('active, username, workspace_owner').eq('id', session.user.id).single();
       var profile = profileResult.data;

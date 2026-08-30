@@ -40,6 +40,12 @@
   var USERNAME_CACHE_KEY = 'sr-username';
   // How long logout waits for the final sync push before giving up on it.
   var LOGOUT_FLUSH_MS = 8000;
+  /* The sync engines' unsent-work marker. It records only a revision
+     number, so it means nothing outside the workspace that wrote it —
+     it MUST be cleared whenever this browser changes hands, or the next
+     account's boot can mistake it for its own and push a freshly wiped
+     key space over that account's workspace. */
+  var PENDING_CHANGES_KEY = 'sr-pending-changes';
   var onLoginPage = /login/.test(window.location.pathname);
   var signingOut = false;
 
@@ -266,6 +272,7 @@
         localStorage.removeItem(USERNAME_CACHE_KEY);
         localStorage.removeItem('sr-ws-revision');
         localStorage.removeItem('sr-conflict-backup');
+        localStorage.removeItem(PENDING_CHANGES_KEY);
         localStorage.setItem(ACTIVE_USER_KEY, storedSession.id);
       } catch (_) { /* ignore */ }
     }
@@ -303,11 +310,20 @@
     if (signingOut) return;
     signingOut = true;
     showLogoutOverlay();
-    // Kill auth material FIRST (synchronously): closing the tab mid-logout
-    // must never leave a usable session behind. The final flush still
-    // works — supabase-js keeps the session in memory.
+    /* Kill the cookie and the in-app sessions immediately — the middleware
+       gate and the ERP unlock both key off those, so the account is
+       unusable from this moment.
+
+       The supabase-js session must NOT be purged here, even though an
+       earlier version of this function did (claiming the client keeps it
+       in memory). It does not: the vendored bundle resolves every request
+       through __loadSession(), which reads the `sb-*-auth-token` entry
+       straight back out of localStorage. Purging first made the farewell
+       flush authenticate as `anon`, so RLS rejected it with 42501 and the
+       user's last change could never be saved — the wait was dead time and
+       the work was then wiped as "saved". The session is purged below,
+       once the flush has had its chance. */
     setAuthCookie('', 0);
-    purgeSupabaseStorage();
     clearInternalSession();
     // Give an unsent sync flush a window so the last change reaches the
     // database, but never block logout indefinitely on a slow network.
@@ -330,13 +346,26 @@
          is still isolated — a different account signing in on this browser
          wipes it (the sr-active-user-id check at boot), and the same
          account picks the work back up and pushes it. */
+      /* `pending` ALONE decides this — never `active` as well. The sync
+         engine sets active=false in exactly the failure branches that mean
+         the work did NOT reach the database (RLS 42501, expired JWT), while
+         leaving pending=true. Requiring active therefore reported "saved"
+         precisely when the data was unsaved, and the wipe below destroyed
+         it. If the status cannot be read at all, assume unsaved: keeping
+         recoverable data costs a little privacy on a shared browser, while
+         guessing wrong the other way is unrecoverable. */
       var unsaved = false;
-      try {
-        var current = window.smartRetailAnalyticsServerSync;
-        var status = current && current.status ? current.status() : null;
-        unsaved = !!(status && status.active && status.pending);
-      } catch (_) { /* treat an unreadable status as saved */ }
+      var sync = null;
+      try { sync = window.smartRetailAnalyticsServerSync; } catch (_) { sync = null; }
+      if (sync) {
+        try {
+          var status = sync.status ? sync.status() : null;
+          unsaved = status ? !!status.pending : true;
+        } catch (_) { unsaved = true; }
+      }
 
+      // Revoke server-side FIRST, while the session is still readable —
+      // signOut() needs it to reach the auth endpoint at all.
       try { client.auth.signOut(); } catch (_) { /* fire-and-forget revocation */ }
       clearInternalSession();
       purgeSupabaseStorage();
@@ -351,6 +380,7 @@
           localStorage.removeItem('sr-erp-profile');
           localStorage.removeItem('sr-ws-revision');
           localStorage.removeItem('sr-conflict-backup');
+          localStorage.removeItem(PENDING_CHANGES_KEY);
         } catch (_) { /* ignore */ }
       }
       window.location.replace(unsaved ? '/login.html?unsaved=1' : '/login.html');
