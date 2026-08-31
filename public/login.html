@@ -44,8 +44,24 @@
         return;
       }
 
-      // Already signed in? Go straight to the right app for the role.
-      if (window.smartRetailAuthReady) {
+      /* The middleware refused the cookie our own session produced. Bouncing
+         back to "/" would just be refused again — an unescapable redirect
+         loop, since both hops use location.replace and write no history.
+         Drop the local session instead and show the form with an error. */
+      var refused = /[?&]session=rejected(&|$)/.test(window.location.search);
+      if (refused) {
+        try {
+          var doomed = [];
+          for (var index = 0; index < localStorage.length; index += 1) {
+            var key = localStorage.key(index);
+            if (key && key.indexOf('sb-') === 0) doomed.push(key);
+          }
+          doomed.forEach(function (key) { localStorage.removeItem(key); });
+        } catch (_) { /* unreadable storage */ }
+        try { client.auth.signOut(); } catch (_) { /* best effort */ }
+        errorBox.textContent = 'Sessiya server tomonidan qabul qilinmadi. Qaytadan kiring — muammo takrorlansa, administratorga xabar bering.';
+      } else if (window.smartRetailAuthReady) {
+        // Already signed in? Go straight to the right app for the role.
         window.smartRetailAuthReady.then(function (session) {
           if (!session) return;
           var target = '/';

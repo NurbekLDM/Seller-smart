@@ -32,11 +32,9 @@ Production architecture:
    in the repository — the database is not updated by a deploy.
 
    For an existing project, prefer the dated migration files next to it over
-   re-running the whole schema. Pending for the live project:
-   `supabase/2026-08-30-staff-write-guard.sql` — `save_app_state()` now forces
-   the owner's analytics half of the snapshot back to its stored value on a
-   staff write, so a tampered or stolen till cannot replace the whole
-   workspace. It redefines one function and touches no data.
+   re-running the whole schema. `supabase/2026-08-30-staff-write-guard.sql`
+   is the only one so far; it is already folded into `schema.sql`, so a
+   project provisioned from that file does not need it.
 3. **Authentication → Sign In / Providers**: make sure Email is enabled and
    **disable "Allow new users to sign up"** — only the owner creates accounts.
 4. **Authentication → Users → Add user**: create the owner's account

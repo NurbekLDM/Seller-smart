@@ -11,9 +11,21 @@
 
 -- ------------------------------------------- 1. remove the v1 schema ------
 
-drop policy if exists profiles_select_own on public.profiles;
-drop policy if exists profiles_admin_update on public.profiles;
-drop policy if exists app_state_select_active on public.app_state;
+-- These three policies belong to the v1 tables. `drop policy if exists`
+-- only tolerates a missing POLICY — a missing TABLE still raises 42P01 —
+-- so on a brand-new project, where public.profiles does not exist yet,
+-- the plain form aborted the whole script on its very first statement.
+-- Guard on the table instead.
+do $$
+begin
+  if to_regclass('public.profiles') is not null then
+    execute 'drop policy if exists profiles_select_own on public.profiles';
+    execute 'drop policy if exists profiles_admin_update on public.profiles';
+  end if;
+  if to_regclass('public.app_state') is not null then
+    execute 'drop policy if exists app_state_select_active on public.app_state';
+  end if;
+end $$;
 
 drop function if exists public.save_app_state(bigint, jsonb);
 drop function if exists public.list_app_state_versions();
