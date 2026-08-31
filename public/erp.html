@@ -11112,6 +11112,7 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
   function movementRowsFor(journal){const timestamp=now(),waybill=ensureWaybillFromJournal(journal);return journal.lines.map(line=>{const sources=journal.allocations.filter(item=>item.lineId===line.lineId);return{id:makeId('MOV'),postingId:journal.postingId,documentNumber:waybill.documentNumber,flowType:waybill.flowType,lineId:line.lineId,time:timestamp,date:timestamp.slice(0,10),sku:line.sku,name:line.name,barcode:line.barcode,qty:line.qty,unitPrice:line.unitPrice,amount:line.amount,from:[...new Set(sources.map(item=>item.from))].join(' + ')||'WMS ombor',to:`Uzum ombori (${waybill.flowType})`,type:'WMS_UZUM_OUTBOUND',status:EXACT_STATUS,sourceAllocations:sources.map(item=>({allocationId:item.allocationId,productId:item.productId,qty:item.deductQty,from:item.from}))};});}
   function applyMovements(journal){const moves=readArray(MOVES_KEY);movementRowsFor(journal).forEach(row=>{if(!moves.some(item=>item.postingId===row.postingId&&item.lineId===row.lineId&&item.type===row.type))moves.unshift(row);});writeArray(MOVES_KEY,moves);}
   function applyOutbound(journal){const outbound=readArray(KEYS.outbound);if(outbound.some(item=>item.postingId===journal.postingId))return;const moves=readArray(MOVES_KEY).filter(item=>item.postingId===journal.postingId&&item.type==='WMS_UZUM_OUTBOUND'),waybill=ensureWaybillFromJournal(journal);outbound.unshift({id:makeId('OUT'),postingId:journal.postingId,documentNumber:waybill.documentNumber,flowType:waybill.flowType,module:'WMS_UZUM_WAYBILL_PRO',createdAt:now(),status:'SENT',statusText:EXACT_STATUS,skuTotal:waybill.skuTotal,quantityTotal:waybill.quantityTotal,amountTotal:waybill.amountTotal,lines:clone(journal.lines),movementIds:moves.map(item=>item.id),waybillCreatedAt:waybill.createdAt,postedBy:actor()});writeArray(KEYS.outbound,outbound.slice(0,500));}
+  function updateOutboundMetadata(postingId,input){const rows=readArray(KEYS.outbound),index=rows.findIndex(item=>item.postingId===text(postingId));if(index<0)throw new Error('Uzum chiqim registri yozuvi topilmadi.');const before=clone(rows[index]),registryDate=text(input&&input.registryDate),note=text(input&&input.note).slice(0,500);if(!/^\d{4}-\d{2}-\d{2}$/.test(registryDate))throw new Error('Registr sanasini to‘g‘ri kiriting.');const timestamp=now(),history=Array.isArray(before.editHistory)?before.editHistory:[],updated={...before,registryDate,note,edited:true,editedAt:timestamp,editedBy:actor(),editHistory:[...history,{time:timestamp,user:actor(),registryDate,note,previousRegistryDate:text(before.registryDate||before.createdAt).slice(0,10),previousNote:text(before.note)}].slice(-50)};rows[index]=updated;writeArray(KEYS.outbound,rows);return clone(updated);}
   function finalize(journal){const waybill=ensureWaybillFromJournal(journal),timestamp=now(),confirmed={...waybill,status:'CONFIRMED',statusText:EXACT_STATUS,confirmedAt:waybill.confirmedAt||timestamp,updatedAt:timestamp,confirmedBy:waybill.confirmedBy||actor()};upsert(KEYS.waybills,confirmed);const audit=readArray(AUDIT_KEY);if(!audit.some(item=>item.postingId===journal.postingId&&item.actionType==='WMS_UZUM_OUTBOUND')){audit.unshift({id:makeId('AUD'),time:timestamp,user:actor(),postingId:journal.postingId,actionType:'WMS_UZUM_OUTBOUND',action:`${journal.postingId} · ${confirmed.flowType} · ${confirmed.quantityTotal} dona · ${confirmed.amountTotal} so‘m. ${EXACT_STATUS}`});writeArray(AUDIT_KEY,audit.slice(0,1000));}return confirmed;}
   function maybeInterrupt(options,state){if(options&&options.failAfter===state){const error=new Error(`Sinov uzilishi: ${state}`);error.code='SIMULATED_INTERRUPTION';throw error;}}
   function resume(postingId,options){const opts=options||{};let journal=findRecovery(postingId);if(!journal)journal=prepare(postingId);if(journal.state===FINAL_STATE)return findWaybill(postingId)||ensureWaybillFromJournal(journal);const lock=acquireLock(postingId);try{journal=findRecovery(postingId)||journal;journal.attempts=whole(journal.attempts)+1;journal.lastError='';journal=saveJournal(journal,journal.state,`Bajarish urinishi #${journal.attempts}`);if(journal.state==='PREPARED'||journal.state==='APPLYING_STOCK'){if(journal.state!=='APPLYING_STOCK')journal=saveJournal(journal,'APPLYING_STOCK','WMS qoldig‘i yozilmoqda');applyStock(journal);journal=saveJournal(journal,'STOCK_APPLIED','Mahsulot miqdori WMS qoldig‘idan chiqarildi');maybeInterrupt(opts,'STOCK_APPLIED');}if(journal.state==='STOCK_APPLIED'||journal.state==='APPLYING_MOVEMENTS'){if(journal.state!=='APPLYING_MOVEMENTS')journal=saveJournal(journal,'APPLYING_MOVEMENTS','WMS harakat tarixi yozilmoqda');applyMovements(journal);journal=saveJournal(journal,'MOVEMENTS_APPLIED','WMS harakat tarixi posting ID bilan yozildi');maybeInterrupt(opts,'MOVEMENTS_APPLIED');}if(journal.state==='MOVEMENTS_APPLIED'||journal.state==='APPLYING_OUTBOUND'){if(journal.state!=='APPLYING_OUTBOUND')journal=saveJournal(journal,'APPLYING_OUTBOUND','Uzum chiqim registri yozilmoqda');applyOutbound(journal);journal=saveJournal(journal,'OUTBOUND_APPLIED','Uzum chiqim registri posting ID bilan yozildi');maybeInterrupt(opts,'OUTBOUND_APPLIED');}if(journal.state==='OUTBOUND_APPLIED'){const confirmed=finalize(journal);saveJournal(journal,FINAL_STATE,EXACT_STATUS);return confirmed;}if(journal.state===FINAL_STATE)return findWaybill(postingId);throw new Error(`Noma’lum tiklash holati: ${journal.state}`);}catch(error){journal=findRecovery(postingId)||journal;journal.lastError=error.message;saveJournal(journal,journal.state,`Xato: ${error.message}`);throw error;}finally{releaseLock(lock);}}
@@ -11128,11 +11129,11 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
   function concatBytes(parts){const normalized=parts.map(toBytes),length=normalized.reduce((sum,item)=>sum+item.length,0),out=new Uint8Array(length);let offset=0;normalized.forEach(item=>{out.set(item,offset);offset+=item.length;});return out;}
   function buildPdfBytes(imagesInput){const images=(imagesInput||[]).map(image=>({bytes:toBytes(image.bytes),width:whole(image.width),height:whole(image.height)}));if(!images.length)throw new Error('PDF uchun sahifa rasmi topilmadi.');const objects=[null],pageRefs=[];images.forEach((image,index)=>{const pageId=3+index*3,imageId=pageId+1,contentId=pageId+2,imageName=`Im${index+1}`,content=`q\n595.28 0 0 841.89 0 0 cm\n/${imageName} Do\nQ\n`;pageRefs.push(`${pageId} 0 R`);objects[pageId]=ascii(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Resources << /XObject << /${imageName} ${imageId} 0 R >> >> /Contents ${contentId} 0 R >>`);objects[imageId]=concatBytes([ascii(`<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${image.bytes.length} >>\nstream\n`),image.bytes,ascii('\nendstream')]);objects[contentId]=ascii(`<< /Length ${content.length} >>\nstream\n${content}endstream`);});objects[1]=ascii('<< /Type /Catalog /Pages 2 0 R >>');objects[2]=ascii(`<< /Type /Pages /Count ${images.length} /Kids [${pageRefs.join(' ')}] >>`);const header=ascii('%PDF-1.4\n%SRERP-PRO\n'),parts=[header],offsets=[0],size=objects.length;let cursor=header.length;for(let index=1;index<size;index++){offsets[index]=cursor;const object=concatBytes([ascii(`${index} 0 obj\n`),objects[index],ascii('\nendobj\n')]);parts.push(object);cursor+=object.length;}const xrefOffset=cursor;let xref=`xref\n0 ${size}\n0000000000 65535 f \n`;for(let index=1;index<size;index++)xref+=`${String(offsets[index]).padStart(10,'0')} 00000 n \n`;xref+=`trailer\n<< /Size ${size} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;parts.push(ascii(xref));return concatBytes(parts);}
 
-  const core=Object.freeze({VERSION,EXACT_STATUS,KEYS,STOCK_KEY,CELLS_KEY,MOVES_KEY,AUDIT_KEY,DEFAULT_COMMISSIONER,makePostingId,makeDocumentNumber,barcodeFromSeed,barcodeRuns,aggregateProducts,generatedBarcode,defaultDocument,saveDraft,prepare,commit,resume,findWaybill,linkedPosting,listIncomplete,documentModel,excelAoA,buildPdfBytes,resetModuleData});
+  const core=Object.freeze({VERSION,EXACT_STATUS,KEYS,STOCK_KEY,CELLS_KEY,MOVES_KEY,AUDIT_KEY,DEFAULT_COMMISSIONER,makePostingId,makeDocumentNumber,barcodeFromSeed,barcodeRuns,aggregateProducts,generatedBarcode,defaultDocument,saveDraft,prepare,commit,resume,findWaybill,linkedPosting,listIncomplete,updateOutboundMetadata,documentModel,excelAoA,buildPdfBytes,resetModuleData});
   root.SRWmsUzumWaybillCore=core;
   if(typeof document==='undefined')return;
 
-  let installed=false,hooksInstalled=false,draftId=makePostingId(),draftLines=[],lockedPosting=null,draftFlowType='FBO',searchQuery='',modalPostingId='';
+  let installed=false,hooksInstalled=false,draftId=makePostingId(),draftLines=[],lockedPosting=null,draftFlowType='FBO',searchQuery='',modalPostingId='',outboundEditPostingId='';
   function esc(value){return String(value==null?'':value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));}
   function format(value){return Math.round(Number(value)||0).toLocaleString('uz-UZ');}
   function dateLabel(value){if(!value)return'—';try{return new Date(value).toLocaleString('uz-UZ');}catch(_){return text(value);}}
@@ -11147,12 +11148,14 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
   function renderSearch(){const rootNode=document.getElementById('wuz27SearchResults');if(!rootNode)return;const rows=searchProducts();rootNode.innerHTML=rows.map(product=>`<button type="button" class="wuz27-search-item" ${product.used||lockedPosting?'disabled':''} onclick="wmsUzumAddProduct('${encodeURIComponent(product.sku)}')"><b>${esc(product.sku)} · ${esc(product.name)}</b><span>${esc(product.description)}</span><span class="wuz27-stock-badge">WMS: ${format(product.qty)} dona · ${format(product.cost)} so‘m</span></button>`).join('')||'<div class="wuz27-empty">Mahsulot topilmadi.</div>';}
   function lineState(line){const product=core.aggregateProducts().find(item=>item.sku===line.sku);if(!product)return{ok:false,label:'WMS qoldig‘i yo‘q'};if(!whole(line.qty))return{ok:false,label:'Miqdor kiriting'};if(whole(line.qty)>product.qty)return{ok:false,label:`Yetarli emas (${product.qty})`};if(!money(line.unitPrice))return{ok:false,label:'Narx kiriting'};return{ok:true,label:'Jo‘natishga tayyor'};}
   function updateTotals(){let quantity=0,amount=0;draftLines.forEach((line,index)=>{line.qty=whole(line.qty);line.unitPrice=money(line.unitPrice);line.amount=line.qty*line.unitPrice;quantity+=line.qty;amount+=line.amount;const sum=document.getElementById(`wuz27LineSum${index}`);if(sum)sum.textContent=`${format(line.amount)} so‘m`;const state=lineState(line),stateNode=document.getElementById(`wuz27LineState${index}`);if(stateNode){stateNode.className=`wuz27-line-state ${state.ok?'ok':'warn'}`;stateNode.innerHTML=`<i class="bi ${state.ok?'bi-check-circle-fill':'bi-exclamation-circle-fill'}"></i>${esc(lockedPosting?'Jo‘natildi':state.label)}`;}});const sku=document.getElementById('wuz27SkuTotal'),qty=document.getElementById('wuz27QtyTotal'),total=document.getElementById('wuz27AmountTotal');if(sku)sku.textContent=`${draftLines.length} SKU`;if(qty)qty.textContent=format(quantity);if(total)total.textContent=`${format(amount)} so‘m`;}
-  function setLockedState(){const locked=!!lockedPosting;document.querySelectorAll('#view-wmsuzumwaybill [data-wuz-field]').forEach(element=>element.disabled=locked);['wuz27SaveDraft','wuz27Confirm'].forEach(id=>{const button=document.getElementById(id);if(button)button.disabled=locked;});const fresh=document.getElementById('wuz27New');if(fresh)fresh.style.display=locked?'':'none';const pdf=document.getElementById('wuz27Pdf'),excel=document.getElementById('wuz27Excel');if(pdf)pdf.disabled=!draftLines.length;if(excel)excel.disabled=!draftLines.length;const status=document.getElementById('wuz27Success');if(status){status.classList.toggle('show',locked);status.innerHTML=locked?`<i class="bi bi-check-circle-fill"></i><div><b>${EXACT_STATUS}</b><span>${esc(lockedPosting.postingId)} · ${esc(lockedPosting.flowType)} · ${whole(lockedPosting.quantityTotal)} dona · ${format(lockedPosting.amountTotal)} so‘m</span></div>`:'';}}
+  function setLockedState(){const locked=!!lockedPosting,savedCurrent=!!core.findWaybill(draftId);document.querySelectorAll('#view-wmsuzumwaybill [data-wuz-field]').forEach(element=>element.disabled=locked);['wuz27SaveDraft','wuz27Confirm'].forEach(id=>{const button=document.getElementById(id);if(button)button.disabled=locked;});const fresh=document.getElementById('wuz27New');if(fresh)fresh.style.display=locked||savedCurrent?'':'none';const pdf=document.getElementById('wuz27Pdf'),excel=document.getElementById('wuz27Excel');if(pdf)pdf.disabled=!draftLines.length;if(excel)excel.disabled=!draftLines.length;const status=document.getElementById('wuz27Success');if(status){status.classList.toggle('show',locked);status.innerHTML=locked?`<i class="bi bi-check-circle-fill"></i><div><b>${EXACT_STATUS}</b><span>${esc(lockedPosting.postingId)} · ${esc(lockedPosting.flowType)} · ${whole(lockedPosting.quantityTotal)} dona · ${format(lockedPosting.amountTotal)} so‘m</span></div>`:'';}}
   function renderComposer(){const body=document.getElementById('wuz27DraftRows');if(!body)return;body.innerHTML=draftLines.map((line,index)=>{const product=core.aggregateProducts().find(item=>item.sku===line.sku),state=lineState(line);if(product){line.name=product.name;line.description=line.description||product.description;line.barcode=line.barcode||product.barcode||core.generatedBarcode(line.sku);if(!money(line.unitPrice))line.unitPrice=product.cost;}return`<tr><td class="text-center">${index+1}</td><td><b class="mono">${esc(line.sku)}</b><span class="wuz27-product-meta">WMS: ${format(product?.qty||0)} dona</span></td><td><span class="wuz27-product-name">${esc(line.name||line.sku)}</span><span class="wuz27-product-meta">${esc(line.description||'')}</span></td><td><span class="wuz27-barcode-chip">${esc(line.barcode||'Avtomatik')}</span></td><td style="width:135px"><input data-wuz-field class="form-control" type="number" min="1" step="1" value="${money(line.unitPrice)||''}" ${lockedPosting?'disabled':''} oninput="wmsUzumSetLine(${index},'unitPrice',this.value)"></td><td style="width:105px"><input data-wuz-field class="form-control" type="number" min="1" step="1" value="${whole(line.qty)||''}" ${lockedPosting?'disabled':''} oninput="wmsUzumSetLine(${index},'qty',this.value)"></td><td><span class="wuz27-money" id="wuz27LineSum${index}">${format(money(line.unitPrice)*whole(line.qty))} so‘m</span></td><td><span id="wuz27LineState${index}" class="wuz27-line-state ${state.ok?'ok':'warn'}"><i class="bi ${state.ok?'bi-check-circle-fill':'bi-exclamation-circle-fill'}"></i>${esc(lockedPosting?'Jo‘natildi':state.label)}</span></td><td><button type="button" class="btn btn-outline-erp btn-sm-erp" ${lockedPosting?'disabled':''} onclick="wmsUzumRemoveLine(${index})"><i class="bi bi-trash3"></i></button></td></tr>`;}).join('')||'<tr><td colspan="9" class="wuz27-empty"><i class="bi bi-search d-block fs-4 mb-1"></i>Yuqoridan SKU yoki nom bo‘yicha mahsulot topib qo‘shing.</td></tr>';const posting=document.getElementById('wuz27PostingId');if(posting)posting.textContent=lockedPosting?lockedPosting.postingId:draftId;updateTotals();setLockedState();renderSearch();renderFlowType();}
   function statusPill(waybill){if(waybill.status==='CONFIRMED')return`<span class="wuz27-pill ok"><i class="bi bi-check-circle-fill"></i>Jo‘natildi</span>`;if(waybill.status==='PREPARED')return'<span class="wuz27-pill warn"><i class="bi bi-arrow-repeat"></i>Posting jarayonida</span>';return'<span class="wuz27-pill"><i class="bi bi-file-earmark"></i>Qoralama</span>';}
   function renderHistory(){const rootNode=document.getElementById('wuz27HistoryRows');if(!rootNode)return;const rows=readArray(KEYS.waybills).slice(0,50);rootNode.innerHTML=rows.map(item=>`<tr><td><button class="btn btn-link p-0 wuz27-link" onclick="wmsUzumOpenPosting('${esc(item.postingId)}')">${esc(item.documentNumber||item.postingId)}</button><span class="wuz27-product-meta">${esc(item.postingId)}</span></td><td><span class="wuz27-pill ${item.flowType==='FBS'?'warn':'ok'}">${esc(item.flowType||'FBO')}</span></td><td>${dateLabel(item.confirmedAt||item.createdAt)}</td><td><b>${whole(item.quantityTotal)} dona</b><span class="wuz27-product-meta">${whole(item.skuTotal||(item.lines||[]).length)} SKU · ${format(item.amountTotal)} so‘m</span></td><td>${statusPill(item)}</td><td><button class="btn btn-outline-erp btn-sm-erp" onclick="wmsUzumDownloadPdf('${esc(item.postingId)}')" title="PDF"><i class="bi bi-file-pdf"></i></button> <button class="btn btn-outline-erp btn-sm-erp" onclick="wmsUzumDownloadExcel('${esc(item.postingId)}')" title="Excel"><i class="bi bi-file-earmark-excel"></i></button></td></tr>`).join('')||'<tr><td colspan="6" class="wuz27-empty">Hozircha yuk xati yo‘q.</td></tr>';}
   function renderRecovery(){const rootNode=document.getElementById('wuz27RecoveryRows');if(!rootNode)return;const rows=readArray(KEYS.recovery).slice(0,20),incomplete=rows.filter(item=>item.state!==FINAL_STATE).length,badge=document.getElementById('wuz27RecoveryCount');if(badge){badge.textContent=`${incomplete} ta ochiq`;badge.className=`wuz27-pill ${incomplete?'warn':'ok'}`;}rootNode.innerHTML=rows.map(item=>{const pending=item.state!==FINAL_STATE;return`<div class="wuz27-recovery-row ${pending?'pending':''}"><div><b>${esc(item.postingId)}</b><span>${esc(phaseLabel(item.state))} · urinish ${whole(item.attempts)}${item.lastError?` · ${esc(item.lastError)}`:''}</span></div>${pending?`<button class="btn btn-accent btn-sm-erp" onclick="wmsUzumResumePosting('${esc(item.postingId)}')"><i class="bi bi-arrow-repeat"></i> Yakunlash</button>`:'<span class="wuz27-pill ok"><i class="bi bi-check"></i>Yakunlangan</span>'}</div>`;}).join('')||'<div class="wuz27-empty"><i class="bi bi-journal-check d-block fs-4 mb-1"></i>Tiklash talab qiladigan operatsiya yo‘q.</div>';}
-  function renderRegister(){const rootNode=document.getElementById('wuz27OutboundRows');if(!rootNode)return;const rows=readArray(KEYS.outbound).slice(0,40);rootNode.innerHTML=rows.map(item=>`<tr><td><span class="wuz27-link">${esc(item.postingId)}</span><span class="wuz27-product-meta">Akt ${esc(item.documentNumber||'—')}</span></td><td><span class="wuz27-pill ${item.flowType==='FBS'?'warn':'ok'}">${esc(item.flowType||'FBO')}</span></td><td>${whole(item.quantityTotal)} dona<span class="wuz27-product-meta">${format(item.amountTotal)} so‘m</span></td><td>${(item.movementIds||[]).length} ta WMS yozuv</td><td><span class="wuz27-pill ok">Jo‘natildi</span></td></tr>`).join('')||'<tr><td colspan="5" class="wuz27-empty">Uzum chiqim registri bo‘sh.</td></tr>';}
+  function outboundRegistryDate(item){return text(item&&item.registryDate||item&&item.createdAt||item&&item.waybillCreatedAt).slice(0,10)||'—';}
+  function renderRegister(){const rootNode=document.getElementById('wuz27OutboundRows');if(!rootNode)return;const rows=readArray(KEYS.outbound).slice(0,40);rootNode.innerHTML=rows.map(item=>`<tr><td><span class="wuz27-link">${esc(item.postingId)}</span><span class="wuz27-product-meta">Akt ${esc(item.documentNumber||'—')}</span></td><td><span class="wuz27-pill ${item.flowType==='FBS'?'warn':'ok'}">${esc(item.flowType||'FBO')}</span></td><td>${whole(item.quantityTotal)} dona<span class="wuz27-product-meta">${format(item.amountTotal)} so‘m · o‘zgarmaydi</span></td><td>${(item.movementIds||[]).length} ta WMS yozuv</td><td><span class="wuz27-pill ok">Jo‘natildi</span>${item.edited?'<span class="wuz27-pill warn ms-1">Tahrirlangan</span>':''}<span class="wuz27-product-meta">${esc(outboundRegistryDate(item))}${item.note?` · ${esc(item.note)}`:''}</span><button type="button" class="btn btn-outline-erp btn-sm-erp mt-1" onclick="wmsUzumEditOutbound('${esc(item.postingId)}')"><i class="bi bi-pencil-square"></i> Tahrirlash</button></td></tr>`).join('')||'<tr><td colspan="5" class="wuz27-empty">Uzum chiqim registri bo‘sh.</td></tr>';}
+  function installOutboundEditorUi(){if(document.getElementById('wuz27OutboundEditModal'))return;document.body.insertAdjacentHTML('beforeend','<div class="modal fade" id="wuz27OutboundEditModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><div class="modal-content"><div class="modal-header"><div><h6 class="modal-title fw-bold"><i class="bi bi-pencil-square me-1"></i> Uzum chiqim registrini tahrirlash</h6><div class="wuz27-muted" id="wuz27OutboundEditPosting"></div></div><button class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="alert alert-warning py-2 small">Miqdor va summa xavfsizlik uchun o‘zgarmaydi. WMS qoldig‘i va CEO moliyaviy hisoblari qayta hisoblanmaydi.</div><label class="form-label">Registr sanasi</label><input class="form-control" id="wuz27OutboundEditDate" type="date"><label class="form-label mt-3">Izoh / sabab</label><textarea class="form-control" id="wuz27OutboundEditNote" rows="3" maxlength="500" placeholder="Tahrirlash sababi yoki izoh"></textarea><div class="wuz27-muted mt-2" id="wuz27OutboundEditProtected"></div></div><div class="modal-footer"><button class="btn btn-outline-erp" data-bs-dismiss="modal">Bekor qilish</button><button class="btn btn-accent" onclick="wmsUzumSaveOutboundEdit()"><i class="bi bi-check2-circle"></i> Saqlash</button></div></div></div></div>');}
   function render(){renderComposer();renderHistory();renderRecovery();renderRegister();}
   function refreshWmsOnly(){try{if(typeof renderWms==='function')renderWms();}catch(_){}try{if(typeof renderWarehouseOverview==='function')renderWarehouseOverview();}catch(_){}try{root.dispatchEvent(new CustomEvent('srerp:products-changed',{detail:{source:'WMS_UZUM_WAYBILL_PRO'}}));}catch(_){}}
   function formatDateRu(value){const parts=String(value||'').split('-');return parts.length===3?`${parts[2]}.${parts[1]}.${parts[0]}`:String(value||'');}
@@ -11182,7 +11185,7 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
       <div class="card-erp wuz27-card"><div class="wuz27-card-head"><div><h6><i class="bi bi-journal-arrow-down me-1"></i> Uzum chiqim registri</h6><p>Mustaqil registr: boshqa savdo va moliya hisoblariga aralashmaydi.</p></div></div><div class="wuz27-table-wrap"><table class="wuz27-table" style="min-width:760px"><thead><tr><th>Posting / Akt</th><th>Tur</th><th>Miqdor / summa</th><th>WMS bog‘lamasi</th><th>Holat</th></tr></thead><tbody id="wuz27OutboundRows"></tbody></table></div></div>
     </div>`;const wmsSection=document.getElementById('view-warehouseoverview')||document.getElementById('view-wms');if(wmsSection)wmsSection.insertAdjacentElement('afterend',section);else document.querySelector('#main .container-erp')?.appendChild(section);document.body.insertAdjacentHTML('beforeend','<div class="modal fade" id="wuz27PostingModal" tabindex="-1"><div class="modal-dialog modal-xl modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><div><h6 class="modal-title fw-bold"><i class="bi bi-link-45deg me-1"></i> Posting bog‘lamasi</h6><div class="wuz27-muted" id="wuz27ModalPosting"></div></div><button class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div><div class="modal-body" id="wuz27PostingBody"></div><div class="modal-footer"><button class="btn btn-outline-erp" onclick="wmsUzumDownloadPdf(window.wuz27ModalPostingId)"><i class="bi bi-file-pdf"></i> PDF</button><button class="btn btn-outline-erp" onclick="wmsUzumDownloadExcel(window.wuz27ModalPostingId)"><i class="bi bi-file-earmark-excel"></i> Excel</button><button class="btn btn-outline-erp" data-bs-dismiss="modal">Yopish</button></div></div></div></div>');writeForm(core.defaultDocument(draftFlowType));}
   function installHooks(){if(hooksInstalled)return;hooksInstalled=true;if(typeof renderView==='function'){const base=renderView;renderView=function wmsUzumRenderView(name){if(name==='wmsuzumwaybill')return render();return base.apply(this,arguments);};}if(typeof authApplyPermissions==='function'){const base=authApplyPermissions;authApplyPermissions=function wmsUzumPermissions(){const result=base.apply(this,arguments),link=document.querySelector('#sidebar .nav-link-erp[data-view="wmsuzumwaybill"]');if(link&&typeof authCanView==='function')link.style.display=authCanView('wmsuzumwaybill')?'':'none';return result;};}root.addEventListener('storage',event=>{if([STOCK_KEY,MOVES_KEY,KEYS.waybills,KEYS.outbound].includes(event.key))render();});}
-  function install(){if(installed||!document.body)return;installed=true;[KEYS.waybills,KEYS.outbound,KEYS.recovery].forEach(key=>{if(!root.localStorage.getItem(key))writeArray(key,[]);});installUi();installHooks();render();if(typeof authApplyPermissions==='function'&&typeof authCurrentUser!=='undefined'&&authCurrentUser)authApplyPermissions();}
+  function install(){if(installed||!document.body)return;installed=true;[KEYS.waybills,KEYS.outbound,KEYS.recovery].forEach(key=>{if(!root.localStorage.getItem(key))writeArray(key,[]);});installUi();installOutboundEditorUi();installHooks();render();if(typeof authApplyPermissions==='function'&&typeof authCurrentUser!=='undefined'&&authCurrentUser)authApplyPermissions();}
 
   root.wmsUzumSetFlow=function(flow){if(lockedPosting)return;const next=flow==='FBS'?'FBS':'FBO',currentWarehouse=fieldValue('wuz27WarehouseAddress'),oldDefault=defaultWarehouse(draftFlowType);draftFlowType=next;if(!currentWarehouse||currentWarehouse===oldDefault)setField('wuz27WarehouseAddress',defaultWarehouse(next));renderFlowType();};
   root.wmsUzumGenerateDocNo=function(){if(!lockedPosting)setField('wuz27DocumentNumber',core.makeDocumentNumber());};
@@ -11193,6 +11196,8 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
   root.wmsUzumSaveDraft=function(){if(lockedPosting)return;try{const record=core.saveDraft(readForm());draftLines=clone(record.lines);draftId=record.postingId;notify(`Qoralama saqlandi: Akt ${record.documentNumber}`);render();}catch(error){notify(error.message,true);}};
   root.wmsUzumConfirm=function(){if(lockedPosting)return;if(typeof authRequireRole==='function'&&!authRequireRole(['ADMIN','WMS']))return;try{const record=core.saveDraft(readForm()),confirmed=core.commit(record.postingId);lockedPosting=confirmed;draftLines=clone(confirmed.lines);writeForm(confirmed);refreshWmsOnly();render();notify(EXACT_STATUS);}catch(error){renderRecovery();renderHistory();notify(`Posting yakunlanmadi: ${error.message}. Tiklash jurnalidan davom ettiring.`,true);}};
   root.wmsUzumNewWaybill=function(){draftId=makePostingId();draftLines=[];lockedPosting=null;searchQuery='';writeForm(core.defaultDocument(draftFlowType));setField('wuz27Search','');render();};
+  root.wmsUzumEditOutbound=function(postingId){if(typeof authRequireRole==='function'&&!authRequireRole(['ADMIN','WMS']))return;const item=readArray(KEYS.outbound).find(row=>row.postingId===postingId);if(!item){notify('Uzum chiqim registri yozuvi topilmadi.',true);return;}outboundEditPostingId=item.postingId;document.getElementById('wuz27OutboundEditPosting').textContent=`${item.postingId} · Akt ${item.documentNumber||'—'}`;setField('wuz27OutboundEditDate',outboundRegistryDate(item)==='—'?now().slice(0,10):outboundRegistryDate(item));setField('wuz27OutboundEditNote',item.note||'');document.getElementById('wuz27OutboundEditProtected').textContent=`Himoyalangan: ${whole(item.quantityTotal)} dona · ${format(item.amountTotal)} so‘m · ${(item.movementIds||[]).length} ta WMS yozuv`;if(typeof bootstrap!=='undefined'&&bootstrap.Modal)new bootstrap.Modal(document.getElementById('wuz27OutboundEditModal')).show();};
+  root.wmsUzumSaveOutboundEdit=function(){if(!outboundEditPostingId)return;if(typeof authRequireRole==='function'&&!authRequireRole(['ADMIN','WMS']))return;try{core.updateOutboundMetadata(outboundEditPostingId,{registryDate:fieldValue('wuz27OutboundEditDate'),note:fieldValue('wuz27OutboundEditNote')});renderRegister();if(typeof bootstrap!=='undefined'&&bootstrap.Modal)bootstrap.Modal.getInstance(document.getElementById('wuz27OutboundEditModal'))?.hide();notify('Uzum chiqim registri tahrirlandi. Miqdor va summa o‘zgarmadi.');outboundEditPostingId='';}catch(error){notify(error.message,true);}};
   root.wmsUzumResumePosting=function(postingId){if(typeof authRequireRole==='function'&&!authRequireRole(['ADMIN','WMS']))return;try{const confirmed=core.resume(postingId);lockedPosting=confirmed;draftId=confirmed.postingId;draftFlowType=confirmed.flowType||'FBO';draftLines=clone(confirmed.lines);writeForm(confirmed);refreshWmsOnly();render();notify(EXACT_STATUS);}catch(error){renderRecovery();notify(`Tiklash xatosi: ${error.message}`,true);}};
   root.wmsUzumDownloadPdf=async function(postingId){try{const record=postingId?core.findWaybill(postingId):currentRecord(true);if(!record)throw new Error('Yuk xati topilmadi.');return await downloadPdf(record);}catch(error){notify(`PDF yaratilmadi: ${error.message}`,true);throw error;}};
   root.wmsUzumDownloadExcel=function(postingId){try{const record=postingId?core.findWaybill(postingId):currentRecord(true);if(!record)throw new Error('Yuk xati topilmadi.');downloadExcel(record);}catch(error){notify(`Excel eksport qilinmadi: ${error.message}`,true);}};
@@ -11223,7 +11228,7 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
   'use strict';
   const VIEW_ID='wmsuzumwaybillbeta',VERSION='27.1-BETA',BETA_NOTE='[BETA] Eski yuk xati',BETA_MODULE='WMS_UZUM_WAYBILL_BETA',DELIVERY_SETTINGS='srerp_wms_uzum_beta_delivery_settings_v1',FINAL_STATE='COMPLETED';
   if(typeof document==='undefined')return;
-  let installed=false,hooksInstalled=false,query='',lines=[],postingId='',documentNumber='',locked=null;
+  let installed=false,hooksInstalled=false,query='',lines=[],postingId='',documentNumber='',locked=null,outboundEditPostingId='';
   const core=()=>root.SRWmsUzumWaybillCore;
   const text=value=>String(value==null?'':value).trim();
   const whole=value=>Math.max(0,Math.floor(Number(value)||0));
@@ -11248,22 +11253,28 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
   function availableProduct(sku){return core()?.aggregateProducts().find(item=>item.sku===sku)||null;}
   function lineState(line){const product=availableProduct(line.sku);if(!product)return{ok:false,label:'WMSda topilmadi'};if(!whole(line.unitPrice))return{ok:false,label:'Tannarx yo‘q'};if(!whole(line.qty))return{ok:false,label:'Miqdor kiriting'};if(whole(line.qty)>whole(product.qty))return{ok:false,label:`Faqat ${whole(product.qty)} dona`};return{ok:true,label:'Tayyor'};}
   function renderSearch(){const rootNode=document.getElementById('wb38Results');if(!rootNode)return;const q=text(query).toLocaleLowerCase('uz'),items=(core()?.aggregateProducts()||[]).filter(item=>whole(item.qty)>0&&!lines.some(line=>line.sku===item.sku)).filter(item=>!q||`${item.sku} ${item.name} ${item.barcode||''}`.toLocaleLowerCase('uz').includes(q)).slice(0,q?14:6);rootNode.innerHTML=items.map(item=>`<button type="button" class="wb38-result" onclick="wuzBetaAdd('${token(item.sku)}')"><span><b>${esc(item.name||item.sku)}</b><small>${esc(item.sku)}${item.barcode?` · ${esc(item.barcode)}`:''}</small></span><span class="wb38-stock">${format(item.qty)} dona</span><span class="wb38-add"><i class="bi bi-plus-lg"></i></span></button>`).join('')||(q?'<div class="wb38-empty">Mos mahsulot topilmadi.</div>':'');}
-  function renderLines(){const body=document.getElementById('wb38Rows');if(!body)return;body.innerHTML=lines.map((line,index)=>{const product=availableProduct(line.sku),state=lineState(line);return`<tr><td><span class="wb38-name">${esc(line.name||line.sku)}</span><span class="wb38-sku">${esc(line.sku)}</span></td><td><b>${format(product?.qty||0)}</b> dona</td><td><input class="form-control wb38-qty" type="number" min="1" step="1" inputmode="numeric" value="${whole(line.qty)||''}" ${locked?'disabled':''} oninput="wuzBetaQty(${index},this.value)"></td><td><span class="wb38-state ${state.ok?'':'warn'}"><i class="bi ${state.ok?'bi-check-circle-fill':'bi-exclamation-circle-fill'}"></i>${esc(locked?'Jo‘natildi':state.label)}</span></td><td><button class="btn btn-outline-erp btn-sm-erp" ${locked?'disabled':''} onclick="wuzBetaRemove(${index})"><i class="bi bi-trash3"></i></button></td></tr>`;}).join('')||'<tr><td colspan="5" class="wb38-empty"><i class="bi bi-box-seam d-block fs-4 mb-1"></i>Mahsulot qidirib yuk xatiga qo‘shing.</td></tr>';const sku=document.getElementById('wb38SkuTotal'),qty=document.getElementById('wb38QtyTotal');if(sku)sku.textContent=lines.length;if(qty)qty.textContent=lines.reduce((sum,line)=>sum+whole(line.qty),0);document.querySelectorAll('#view-wmsuzumwaybillbeta input').forEach(input=>input.disabled=!!locked);const confirm=document.getElementById('wb38Confirm');if(confirm)confirm.disabled=!!locked||!lines.length;const fresh=document.getElementById('wb38New');if(fresh)fresh.style.display=locked?'':'none';const success=document.getElementById('wb38Success');if(success){success.classList.toggle('show',!!locked);success.innerHTML=locked?`<i class="bi bi-check-circle-fill fs-5"></i><div><b>${esc(core().EXACT_STATUS)}</b><span>${esc(locked.postingId)} · ${whole(locked.quantityTotal)} dona</span></div>`:'';}}
+  function renderLines(){const body=document.getElementById('wb38Rows');if(!body)return;body.innerHTML=lines.map((line,index)=>{const product=availableProduct(line.sku),state=lineState(line);return`<tr><td><span class="wb38-name">${esc(line.name||line.sku)}</span><span class="wb38-sku">${esc(line.sku)}</span></td><td><b>${format(product?.qty||0)}</b> dona</td><td><input class="form-control wb38-qty" type="number" min="1" step="1" inputmode="numeric" value="${whole(line.qty)||''}" ${locked?'disabled':''} oninput="wuzBetaQty(${index},this.value)"></td><td><span class="wb38-state ${state.ok?'':'warn'}"><i class="bi ${state.ok?'bi-check-circle-fill':'bi-exclamation-circle-fill'}"></i>${esc(locked?'Jo‘natildi':state.label)}</span></td><td><button class="btn btn-outline-erp btn-sm-erp" ${locked?'disabled':''} onclick="wuzBetaRemove(${index})"><i class="bi bi-trash3"></i></button></td></tr>`;}).join('')||'<tr><td colspan="5" class="wb38-empty"><i class="bi bi-box-seam d-block fs-4 mb-1"></i>Mahsulot qidirib yuk xatiga qo‘shing.</td></tr>';const sku=document.getElementById('wb38SkuTotal'),qty=document.getElementById('wb38QtyTotal');if(sku)sku.textContent=lines.length;if(qty)qty.textContent=lines.reduce((sum,line)=>sum+whole(line.qty),0);document.querySelectorAll('#view-wmsuzumwaybillbeta input').forEach(input=>input.disabled=!!locked);const confirm=document.getElementById('wb38Confirm');if(confirm)confirm.disabled=!!locked||!lines.length;const savedCurrent=betaWaybills().some(item=>item.postingId===postingId),fresh=document.getElementById('wb38New');if(fresh)fresh.style.display=locked||savedCurrent?'':'none';const success=document.getElementById('wb38Success');if(success){success.classList.toggle('show',!!locked);success.innerHTML=locked?`<i class="bi bi-check-circle-fill fs-5"></i><div><b>${esc(core().EXACT_STATUS)}</b><span>${esc(locked.postingId)} · ${whole(locked.quantityTotal)} dona</span></div>`:'';}}
   function renderHistory(){const rootNode=document.getElementById('wb38History');if(!rootNode)return;rootNode.innerHTML=betaWaybills().slice(0,20).map(item=>{const delivery=item.betaDelivery||{};return`<div class="wb38-history-row"><div><b>${esc(item.documentNumber||item.postingId)}</b><span>${esc(item.postingId)} · ${whole(item.quantityTotal)} dona${delivery.driverName?` · ${esc(delivery.driverName)}`:''}${delivery.vehicleNumber?` · ${esc(delivery.vehicleNumber)}`:''}${delivery.price!=null?` · ${format(delivery.price)} so‘m`:''}</span></div><span class="wb38-status ${item.status==='CONFIRMED'?'':'pending'}">${item.status==='CONFIRMED'?'Jo‘natildi':'Qoralama'}</span></div>`;}).join('')||'<div class="wb38-empty">BETA yuk xatlari hali yo‘q.</div>';const recovery=document.getElementById('wb38Recovery'),count=document.getElementById('wb38RecoveryCount'),rows=betaRecovery().filter(item=>item.state!==FINAL_STATE);if(count)count.textContent=`${rows.length} ta`;if(recovery)recovery.innerHTML=rows.map(item=>`<div class="wb38-recovery-row"><div><b>${esc(item.postingId)}</b><span>${esc(item.state)}${item.lastError?` · ${esc(item.lastError)}`:''}</span></div><button class="btn btn-accent btn-sm-erp" onclick="wuzBetaResume('${token(item.postingId)}')"><i class="bi bi-arrow-repeat"></i> Yakunlash</button></div>`).join('')||'<div class="wb38-empty">Yarim qolgan BETA posting yo‘q.</div>';}
-  function render(){if(!document.getElementById('view-'+VIEW_ID))return;const post=document.getElementById('wb38Posting');if(post)post.textContent=locked?locked.postingId:postingId;renderSearch();renderLines();renderHistory();}
+  function betaOutbound(){const api=core();if(!api)return[];const ids=new Set(betaWaybills().map(item=>item.postingId));return readArray(api.KEYS.outbound).filter(item=>ids.has(item.postingId));}
+  function outboundRegistryDate(item){return text(item&&item.registryDate||item&&item.createdAt||item&&item.waybillCreatedAt).slice(0,10)||'—';}
+  function renderOutbound(){const rootNode=document.getElementById('wb38OutboundRows');if(!rootNode)return;const rows=betaOutbound().slice(0,30);rootNode.innerHTML=rows.map(item=>`<tr><td><span class="wb38-name">${esc(item.postingId)}</span><span class="wb38-sku">${esc(outboundRegistryDate(item))}</span></td><td><b>${whole(item.quantityTotal)} dona</b><span class="wb38-sku">${format(item.amountTotal)} so‘m · o‘zgarmaydi</span></td><td>${(item.movementIds||[]).length} ta</td><td><span class="wb38-status">Jo‘natildi</span>${item.edited?'<span class="wb38-status pending ms-1">Tahrirlangan</span>':''}<span class="wb38-sku">${esc(item.note||'Izoh yo‘q')}</span></td><td><button class="btn btn-outline-erp btn-sm-erp" onclick="wuzBetaEditOutbound('${token(item.postingId)}')"><i class="bi bi-pencil-square"></i> Tahrirlash</button></td></tr>`).join('')||'<tr><td colspan="5" class="wb38-empty">BETA Uzum chiqim registri bo‘sh.</td></tr>';}
+  function installOutboundRegisterUi(){const section=document.getElementById('view-'+VIEW_ID),shell=section?.querySelector('.wb38-shell');if(shell&&!document.getElementById('wb38OutboundRows'))shell.insertAdjacentHTML('beforeend','<div class="card-erp wb38-card"><div class="wb38-card-head"><div><h6><i class="bi bi-journal-arrow-down me-1"></i> Uzum chiqim registri</h6><p>BETA jo‘natmalari. Sana va izoh tahrirlanadi; miqdor va summa himoyalangan.</p></div></div><div class="wb38-table-wrap"><table class="wb38-table"><thead><tr><th>Posting / sana</th><th>Miqdor / summa</th><th>WMS</th><th>Holat / izoh</th><th>Amal</th></tr></thead><tbody id="wb38OutboundRows"></tbody></table></div></div>');if(!document.getElementById('wb38OutboundEditModal'))document.body.insertAdjacentHTML('beforeend','<div class="modal fade" id="wb38OutboundEditModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><div class="modal-content"><div class="modal-header"><div><h6 class="modal-title fw-bold"><i class="bi bi-pencil-square me-1"></i> BETA chiqim registrini tahrirlash</h6><div class="wb38-sub" id="wb38OutboundEditPosting"></div></div><button class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="alert alert-warning py-2 small">Miqdor va summa o‘zgarmaydi. WMS qoldig‘i va CEO moliyaviy hisoblari qayta hisoblanmaydi.</div><label class="form-label">Registr sanasi</label><input class="form-control" id="wb38OutboundEditDate" type="date"><label class="form-label mt-3">Izoh / sabab</label><textarea class="form-control" id="wb38OutboundEditNote" rows="3" maxlength="500"></textarea><div class="wb38-sub mt-2" id="wb38OutboundEditProtected"></div></div><div class="modal-footer"><button class="btn btn-outline-erp" data-bs-dismiss="modal">Bekor qilish</button><button class="btn btn-accent" onclick="wuzBetaSaveOutboundEdit()"><i class="bi bi-check2-circle"></i> Saqlash</button></div></div></div></div>');}
+  function render(){if(!document.getElementById('view-'+VIEW_ID))return;const post=document.getElementById('wb38Posting');if(post)post.textContent=locked?locked.postingId:postingId;renderSearch();renderLines();renderHistory();renderOutbound();}
   function refreshWms(){try{if(typeof renderWms==='function')renderWms();}catch(_){}try{if(typeof renderWarehouseOverview==='function')renderWarehouseOverview();}catch(_){}try{root.dispatchEvent(new CustomEvent('srerp:products-changed',{detail:{source:'WMS_UZUM_WAYBILL_BETA'}}));}catch(_){}}
   function loadConfirmed(record){locked=record;postingId=record.postingId;documentNumber=record.documentNumber;lines=clone(record.lines||[]);writeDocument(record);refreshWms();render();}
   function installUi(){if(document.getElementById('view-'+VIEW_ID))return;const api=core();if(!api)return;if(typeof VIEW_META!=='undefined')VIEW_META[VIEW_ID]=['Yuk xati tayyorlash — BETA','Eski sodda ko‘rinish · WMS → Uzum'];if(typeof AUTH_V12_VIEWS!=='undefined'&&!AUTH_V12_VIEWS.some(item=>item.id===VIEW_ID)){const index=AUTH_V12_VIEWS.findIndex(item=>item.id==='wmsuzumwaybill');AUTH_V12_VIEWS.splice(index>=0?index+1:AUTH_V12_VIEWS.length,0,{id:VIEW_ID,label:'Yuk xati tayyorlash — BETA',desc:'Eski sodda WMS → Uzum yuk xati'});}if(typeof AUTH_V6_ROLES!=='undefined'&&AUTH_V6_ROLES.WMS&&!AUTH_V6_ROLES.WMS.views.includes(VIEW_ID))AUTH_V6_ROLES.WMS.views.push(VIEW_ID);
     const proLink=document.querySelector('#sidebar .nav-link-erp[data-view="wmsuzumwaybill"]');if(proLink){proLink.insertAdjacentHTML('afterend',`<div class="nav-link-erp" data-view="${VIEW_ID}"><i class="bi bi-file-earmark-text"></i> Yuk xati tayyorlash <span class="badge-mini">BETA</span></div>`);document.querySelector(`#sidebar .nav-link-erp[data-view="${VIEW_ID}"]`)?.addEventListener('click',()=>{if(typeof authCanView==='function'&&!authCanView(VIEW_ID))return;if(typeof switchView==='function')switchView(VIEW_ID);});}
     const section=document.createElement('section');section.id='view-'+VIEW_ID;section.className='view-section';section.innerHTML=`<div class="wb38-shell"><div class="card-erp wb38-card"><div class="wb38-head"><div class="wb38-title"><span class="wb38-icon"><i class="bi bi-file-earmark-text"></i></span><div><h5>Yuk xati tayyorlash <span class="wb38-badge"><i class="bi bi-stars"></i>BETA</span></h5><div class="wb38-sub">Eski sodda ko‘rinish · WMS ombordan Uzum omboriga</div></div></div><span class="wb38-posting" id="wb38Posting"></span></div></div><div class="wb38-flow"><div class="wb38-flow-node"><i class="bi bi-box-seam"></i><div><b>WMS ombor</b><span>Joriy qoldiq</span></div></div><i class="bi bi-arrow-right wb38-arrow"></i><div class="wb38-flow-node"><div><b>Uzum ombori</b><span>Tasdiqlangan jo‘natma</span></div><i class="bi bi-shop"></i></div></div><div class="wb38-grid"><div class="card-erp wb38-card"><div class="wb38-card-head"><div><h6>Mahsulotlar</h6><p>SKU yoki nom bo‘yicha toping va miqdorni kiriting.</p></div></div><div class="wb38-meta"><div class="wb38-field"><label>Hujjat raqami</label><input id="wb38DocumentNo" class="form-control"></div><div class="wb38-field"><label>Jo‘natma sanasi</label><input id="wb38Date" class="form-control" type="date" max="${today()}"></div></div><details class="wb38-party" id="wb38Party"><summary>Yetkazib beruvchi (taksi / dostavka)</summary><div class="wb38-party-grid"><div class="wb38-field"><label>Haydovchi ismi</label><input id="wb38Driver" class="form-control" autocomplete="name" placeholder="Masalan: Akmal"></div><div class="wb38-field"><label>Telefon raqami</label><input id="wb38Phone" class="form-control" type="tel" inputmode="tel" placeholder="+998 __ ___ __ __"></div><div class="wb38-field"><label>Taksi / dostavka raqami</label><input id="wb38Vehicle" class="form-control mono" autocomplete="off" placeholder="Masalan: 01 A 123 AA"></div><div class="wb38-field"><label>Yetkazib berish narxi</label><div class="input-group"><input id="wb38DeliveryPrice" class="form-control" type="number" min="0" step="1000" inputmode="numeric" placeholder="0"><span class="input-group-text">so‘m</span></div></div></div></details><div class="wb38-search"><div class="wb38-search-row"><input id="wb38Search" class="form-control" placeholder="SKU yoki mahsulot nomi..." oninput="wuzBetaSearch(this.value)"><button class="btn btn-outline-erp" onclick="document.getElementById('wb38Search').focus()"><i class="bi bi-search"></i></button></div><div class="wb38-results" id="wb38Results"></div></div><div class="wb38-table-wrap mt-3"><table class="wb38-table"><thead><tr><th>Mahsulot</th><th>WMS qoldiq</th><th>Miqdor</th><th>Holat</th><th></th></tr></thead><tbody id="wb38Rows"></tbody></table></div></div><div><div class="card-erp wb38-card"><div class="wb38-card-head"><div><h6>Jo‘natmani tasdiqlash</h6><p>Bitta posting ID orqali barcha yozuvlar bog‘lanadi.</p></div></div><div class="wb38-summary"><div class="wb38-kpi"><span>SKU soni</span><b id="wb38SkuTotal">0</b></div><div class="wb38-kpi"><span>Jami dona</span><b id="wb38QtyTotal">0</b></div></div><div class="wb38-actions"><button id="wb38Confirm" class="btn btn-accent wb38-confirm" onclick="wuzBetaConfirm()"><i class="bi bi-send-check me-1"></i>Tasdiqlash va jo‘natish</button><div class="wb38-secondary"><button class="btn btn-outline-erp" onclick="wuzBetaSave()"><i class="bi bi-save me-1"></i>Saqlash</button><button id="wb38New" class="btn btn-outline-erp" style="display:none" onclick="wuzBetaNew()"><i class="bi bi-plus-circle me-1"></i>Yangi</button></div></div><div class="wb38-success" id="wb38Success"></div></div><div class="card-erp wb38-card mt-3"><div class="wb38-card-head"><div><h6>Eski yuk xatlari</h6><p>Faqat BETA oqimida yaratilgan yozuvlar.</p></div></div><div class="wb38-history" id="wb38History"></div><div class="wb38-recovery"><div class="wb38-recovery-title"><span>Tiklash jurnali</span><span class="wb38-badge" id="wb38RecoveryCount">0 ta</span></div><div id="wb38Recovery"></div></div></div></div></div></div>`;const proSection=document.getElementById('view-wmsuzumwaybill');if(proSection)proSection.insertAdjacentElement('afterend',section);else document.querySelector('#main .container-erp')?.appendChild(section);const defaults=api.defaultDocument('FBO');postingId=api.makePostingId();documentNumber=api.makeDocumentNumber();writeDocument(defaults);setField('wb38DocumentNo',documentNumber);}
   function installHooks(){if(hooksInstalled)return;hooksInstalled=true;if(typeof renderView==='function'){const base=renderView;renderView=function wmsUzumBetaRenderView(name){if(name===VIEW_ID)return render();return base.apply(this,arguments);};}if(typeof authApplyPermissions==='function'){const base=authApplyPermissions;authApplyPermissions=function wmsUzumBetaPermissions(){const result=base.apply(this,arguments),link=document.querySelector(`#sidebar .nav-link-erp[data-view="${VIEW_ID}"]`);if(link&&typeof authCanView==='function')link.style.display=authCanView(VIEW_ID)?'':'none';return result;};}root.addEventListener('storage',event=>{const api=core();if(api&&[api.STOCK_KEY,api.MOVES_KEY,api.KEYS.waybills,api.KEYS.recovery].includes(event.key))render();});}
-  function install(){if(installed||!document.body||!core())return;installed=true;installUi();installHooks();render();if(typeof authApplyPermissions==='function'&&typeof authCurrentUser!=='undefined'&&authCurrentUser)authApplyPermissions();}
+  function install(){if(installed||!document.body||!core())return;installed=true;installUi();installOutboundRegisterUi();installHooks();render();if(typeof authApplyPermissions==='function'&&typeof authCurrentUser!=='undefined'&&authCurrentUser)authApplyPermissions();}
   root.wuzBetaSearch=value=>{query=value||'';renderSearch();};
   root.wuzBetaAdd=encodedSku=>{if(locked)return;const sku=decodeURIComponent(encodedSku),product=availableProduct(sku);if(!product){notify('Mahsulot WMS qoldig‘ida topilmadi.',true);return;}if(lines.some(line=>line.sku===sku)){notify('Bu SKU yuk xatiga qo‘shilgan.',true);return;}lines.push({sku:product.sku,name:product.name,description:product.description,barcode:product.barcode||core().generatedBarcode(product.sku),unitPrice:whole(product.cost),qty:1,amount:whole(product.cost)});query='';setField('wb38Search','');render();};
   root.wuzBetaQty=(index,value)=>{if(!lines[index]||locked)return;lines[index].qty=whole(value);renderLines();};
   root.wuzBetaRemove=index=>{if(locked)return;lines.splice(index,1);render();};
   root.wuzBetaSave=()=>{if(locked)return;try{const record=saveBetaDraft();postingId=record.postingId;documentNumber=record.documentNumber;lines=clone(record.lines);render();notify(`BETA yuk xati saqlandi: ${record.documentNumber}`);}catch(error){if(/haydovchi|telefon|taksi|dostavka|yetkazib berish narxi/i.test(error.message))document.getElementById('wb38Party').open=true;notify(error.message,true);}};
   root.wuzBetaConfirm=()=>{if(locked)return;if(typeof authRequireRole==='function'&&!authRequireRole(['ADMIN','WMS']))return;try{const saved=saveBetaDraft(),confirmed=core().commit(saved.postingId);loadConfirmed(confirmed);notify(core().EXACT_STATUS);}catch(error){if(/haydovchi|telefon|taksi|dostavka|yetkazib berish narxi/i.test(error.message))document.getElementById('wb38Party').open=true;renderHistory();notify(`Jo‘natma yakunlanmadi: ${error.message}`,true);}};
+  root.wuzBetaEditOutbound=encodedPosting=>{if(typeof authRequireRole==='function'&&!authRequireRole(['ADMIN','WMS']))return;const id=decodeURIComponent(encodedPosting),item=betaOutbound().find(row=>row.postingId===id);if(!item){notify('BETA Uzum chiqim registri yozuvi topilmadi.',true);return;}outboundEditPostingId=item.postingId;document.getElementById('wb38OutboundEditPosting').textContent=item.postingId;setField('wb38OutboundEditDate',outboundRegistryDate(item)==='—'?new Date().toISOString().slice(0,10):outboundRegistryDate(item));setField('wb38OutboundEditNote',item.note||'');document.getElementById('wb38OutboundEditProtected').textContent=`Himoyalangan: ${whole(item.quantityTotal)} dona · ${format(item.amountTotal)} so‘m · ${(item.movementIds||[]).length} ta WMS yozuv`;if(typeof bootstrap!=='undefined'&&bootstrap.Modal)new bootstrap.Modal(document.getElementById('wb38OutboundEditModal')).show();};
+  root.wuzBetaSaveOutboundEdit=()=>{if(!outboundEditPostingId)return;if(typeof authRequireRole==='function'&&!authRequireRole(['ADMIN','WMS']))return;try{core().updateOutboundMetadata(outboundEditPostingId,{registryDate:field('wb38OutboundEditDate'),note:field('wb38OutboundEditNote')});renderOutbound();if(typeof bootstrap!=='undefined'&&bootstrap.Modal)bootstrap.Modal.getInstance(document.getElementById('wb38OutboundEditModal'))?.hide();notify('BETA chiqim registri tahrirlandi. Miqdor va summa o‘zgarmadi.');outboundEditPostingId='';}catch(error){notify(error.message,true);}};
   root.wuzBetaResume=encodedPosting=>{if(typeof authRequireRole==='function'&&!authRequireRole(['ADMIN','WMS']))return;try{const confirmed=core().resume(decodeURIComponent(encodedPosting));loadConfirmed(confirmed);notify(core().EXACT_STATUS);}catch(error){renderHistory();notify(`Tiklash xatosi: ${error.message}`,true);}};
   root.wuzBetaNew=newDraft;
   root.SRWmsUzumWaybillBeta=Object.freeze({version:VERSION,render,newDraft});
@@ -11556,6 +11567,36 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
     });
     writeArray(KEYS.outbound, outbound.slice(0, 250));
   }
+  function updateOutboundMetadata(postingId, input){
+    const rows = readArray(KEYS.outbound);
+    const index = rows.findIndex(item => item.postingId === text(postingId));
+    if (index < 0) throw new Error("Uzum chiqim registri yozuvi topilmadi.");
+    const before = clone(rows[index]);
+    const registryDate = text(input && input.registryDate);
+    const note = text(input && input.note).slice(0, 500);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(registryDate)) throw new Error("Registr sanasini to'g'ri kiriting.");
+    const timestamp = now();
+    const history = Array.isArray(before.editHistory) ? before.editHistory : [];
+    const updated = {
+      ...before,
+      registryDate,
+      note,
+      edited: true,
+      editedAt: timestamp,
+      editedBy: actor(),
+      editHistory: [...history, {
+        time: timestamp,
+        user: actor(),
+        registryDate,
+        note,
+        previousRegistryDate: text(before.registryDate || before.createdAt).slice(0, 10),
+        previousNote: text(before.note)
+      }].slice(-50)
+    };
+    rows[index] = updated;
+    writeArray(KEYS.outbound, rows);
+    return clone(updated);
+  }
   function finalize(journal){
     const waybill = ensureWaybillFromJournal(journal);
     const timestamp = now();
@@ -11642,7 +11683,7 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
     [KEYS.waybills, KEYS.outbound, KEYS.recovery, KEYS.lock].forEach(key => localStorage.removeItem(key));
   }
 
-  const core = Object.freeze({ VERSION, EXACT_STATUS, KEYS, makePostingId, aggregateProducts, saveDraft, prepare, commit, resume, linkedPosting, listIncomplete, resetModuleData });
+  const core = Object.freeze({ VERSION, EXACT_STATUS, KEYS, makePostingId, aggregateProducts, saveDraft, prepare, commit, resume, linkedPosting, listIncomplete, updateOutboundMetadata, resetModuleData });
   window.SRWmsUzumWaybillLiteCore = core;
 
   if (typeof document === 'undefined') return;
@@ -11652,6 +11693,7 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
   let draftLines = [];
   let lockedPosting = null;
   let searchQuery = '';
+  let outboundEditPostingId = '';
 
   function esc(value){ return String(value == null ? '' : value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
   function token(value){ return encodeURIComponent(String(value == null ? '' : value)).replace(/'/g,'%27'); }
@@ -11703,7 +11745,8 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
     const search = document.getElementById('wlt39Search'); if (search) search.disabled = isLocked;
     const searchClear = document.getElementById('wlt39SearchClear'); if (searchClear) searchClear.disabled = isLocked;
     ['wlt39AddLine','wlt39SaveDraft','wlt39Confirm'].forEach(id => { const button = document.getElementById(id); if (button) button.disabled = isLocked; });
-    const fresh = document.getElementById('wlt39New'); if (fresh) fresh.style.display = isLocked ? '' : 'none';
+    const savedCurrent = readArray(KEYS.waybills).some(item => item.postingId === draftId);
+    const fresh = document.getElementById('wlt39New'); if (fresh) fresh.style.display = isLocked || savedCurrent ? '' : 'none';
     const status = document.getElementById('wlt39Success');
     if (status) {
       status.classList.toggle('show', isLocked);
@@ -11734,12 +11777,19 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
   function renderRegister(){
     const root = document.getElementById('wlt39OutboundRows'); if (!root) return;
     const rows = readArray(KEYS.outbound).slice(0,30);
-    root.innerHTML = rows.map(item => `<tr><td><span class="wlt39-link">${esc(item.postingId)}</span></td><td>${whole(item.quantityTotal)} dona</td><td>${item.movementIds.length} ta WMS yozuv</td><td><span class="wlt39-pill ok">Jo'natildi</span></td></tr>`).join('') || '<tr><td colspan="4" class="wlt39-empty">Uzum chiqim registri bo\'sh.</td></tr>';
+    root.innerHTML = rows.map(item => {
+      const registryDate = text(item.registryDate || item.createdAt || item.waybillCreatedAt).slice(0,10) || '—';
+      return `<tr><td><span class="wlt39-link">${esc(item.postingId)}</span><span class="wlt39-product-meta">${esc(registryDate)}</span></td><td>${whole(item.quantityTotal)} dona<span class="wlt39-product-meta">Miqdor o'zgarmaydi</span></td><td>${(item.movementIds || []).length} ta WMS yozuv</td><td><span class="wlt39-pill ok">Jo'natildi</span>${item.edited ? '<span class="wlt39-pill warn ms-1">Tahrirlangan</span>' : ''}<span class="wlt39-product-meta">${esc(item.note || 'Izoh yo‘q')}</span><button type="button" class="btn btn-outline-erp btn-sm-erp mt-1" onclick="wmsUzumLiteEditOutbound('${esc(item.postingId)}')"><i class="bi bi-pencil-square"></i> Tahrirlash</button></td></tr>`;
+    }).join('') || '<tr><td colspan="4" class="wlt39-empty">Uzum chiqim registri bo\'sh.</td></tr>';
   }
   function render(){ renderComposer(); renderSearch(); renderHistory(); renderRecovery(); renderRegister(); }
   function refreshWmsOnly(){
     try { if (typeof renderWms === 'function') renderWms(); } catch (_) {}
     try { if (typeof renderWarehouseOverview === 'function') renderWarehouseOverview(); } catch (_) {}
+  }
+  function installOutboundEditorUi(){
+    if (document.getElementById('wlt39OutboundEditModal')) return;
+    document.body.insertAdjacentHTML('beforeend', `<div class="modal fade" id="wlt39OutboundEditModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><div class="modal-content"><div class="modal-header"><div><h6 class="modal-title fw-bold"><i class="bi bi-pencil-square me-1"></i> Lite chiqim registrini tahrirlash</h6><div class="wlt39-muted" id="wlt39OutboundEditPosting"></div></div><button class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="alert alert-warning py-2 small">Miqdor o‘zgarmaydi. WMS qoldig‘i va CEO moliyaviy hisoblari qayta hisoblanmaydi.</div><label class="form-label">Registr sanasi</label><input class="form-control" id="wlt39OutboundEditDate" type="date"><label class="form-label mt-3">Izoh / sabab</label><textarea class="form-control" id="wlt39OutboundEditNote" rows="3" maxlength="500"></textarea><div class="wlt39-muted mt-2" id="wlt39OutboundEditProtected"></div></div><div class="modal-footer"><button class="btn btn-outline-erp" data-bs-dismiss="modal">Bekor qilish</button><button class="btn btn-accent" onclick="wmsUzumLiteSaveOutboundEdit()"><i class="bi bi-check2-circle"></i> Saqlash</button></div></div></div></div>`);
   }
   function installUi(){
     if (!document.body || document.getElementById('view-wmsuzumwaybilllite')) return;
@@ -11790,7 +11840,7 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
   function install(){
     if (installed || !document.body) return; installed = true;
     [KEYS.waybills, KEYS.outbound, KEYS.recovery].forEach(key => { if (!localStorage.getItem(key)) writeArray(key, []); });
-    installUi(); installHooks(); render();
+    installUi(); installOutboundEditorUi(); installHooks(); render();
     if (typeof authApplyPermissions === 'function' && typeof authCurrentUser !== 'undefined' && authCurrentUser) authApplyPermissions();
   }
 
@@ -11829,6 +11879,32 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
     } catch (error) { renderRecovery(); renderHistory(); notify(`Posting yakunlanmadi: ${error.message}. Tiklash jurnalidan davom ettiring.`, true); }
   };
   window.wmsUzumLiteNewWaybill = function(){ draftId = makePostingId(); draftLines = []; lockedPosting = null; searchQuery = ''; const note = document.getElementById('wlt39Note'); if (note) note.value = ''; const search = document.getElementById('wlt39Search'); if (search) search.value = ''; render(); };
+  window.wmsUzumLiteEditOutbound = function(postingId){
+    if (typeof authRequireRole === 'function' && !authRequireRole(['ADMIN','WMS'])) return;
+    const item = readArray(KEYS.outbound).find(row => row.postingId === postingId);
+    if (!item) { notify("Uzum chiqim registri yozuvi topilmadi.", true); return; }
+    outboundEditPostingId = item.postingId;
+    const registryDate = text(item.registryDate || item.createdAt || item.waybillCreatedAt).slice(0,10) || now().slice(0,10);
+    document.getElementById('wlt39OutboundEditPosting').textContent = item.postingId;
+    document.getElementById('wlt39OutboundEditDate').value = registryDate;
+    document.getElementById('wlt39OutboundEditNote').value = item.note || '';
+    document.getElementById('wlt39OutboundEditProtected').textContent = `Himoyalangan: ${whole(item.quantityTotal)} dona · ${(item.movementIds || []).length} ta WMS yozuv`;
+    if (typeof bootstrap !== 'undefined' && bootstrap.Modal) new bootstrap.Modal(document.getElementById('wlt39OutboundEditModal')).show();
+  };
+  window.wmsUzumLiteSaveOutboundEdit = function(){
+    if (!outboundEditPostingId) return;
+    if (typeof authRequireRole === 'function' && !authRequireRole(['ADMIN','WMS'])) return;
+    try {
+      core.updateOutboundMetadata(outboundEditPostingId, {
+        registryDate: document.getElementById('wlt39OutboundEditDate')?.value,
+        note: document.getElementById('wlt39OutboundEditNote')?.value
+      });
+      renderRegister();
+      if (typeof bootstrap !== 'undefined' && bootstrap.Modal) bootstrap.Modal.getInstance(document.getElementById('wlt39OutboundEditModal'))?.hide();
+      notify("Lite chiqim registri tahrirlandi. Miqdor o'zgarmadi.");
+      outboundEditPostingId = '';
+    } catch (error) { notify(error.message, true); }
+  };
   window.wmsUzumLiteResumePosting = function(postingId){
     if (typeof authRequireRole === 'function' && !authRequireRole(['ADMIN','WMS'])) return;
     try { const confirmed = core.resume(postingId); lockedPosting = confirmed; draftId = confirmed.postingId; draftLines = clone(confirmed.lines); refreshWmsOnly(); render(); notify(EXACT_STATUS); }
@@ -11847,7 +11923,6 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
 })();
 </script>
 <!-- SMART_RETAIL_WMS_UZUM_WAYBILL_LITE_39_END -->
-
 
 <!-- SMART_RETAIL_PRODUCT_IMAGE_GUARD_28_BEGIN -->
 <style id="smartRetailProductImageGuardStyles28">
@@ -14613,6 +14688,246 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
 </script>
 <!-- SMART_RETAIL_DRAFTS_JOURNAL_44_END -->
 
+<!-- SMART_RETAIL_SALES_HISTORY_ACTIONS_56_BEGIN -->
+<style id="smartRetailSalesHistoryActions56Styles">
+#view-saleshistory .sh56-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:230px}
+#view-saleshistory .sh56-actions .btn{white-space:nowrap}
+.sh56-detail-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-bottom:14px;padding:10px;border:1px solid var(--border);border-radius:12px;background:var(--panel)}
+.sh56-return-panel{margin-top:16px;padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--panel)}
+.sh56-return-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center;padding:9px 0;border-bottom:1px dashed var(--border)}
+.sh56-return-row:last-child{border-bottom:0}
+.sh56-return-row small{display:block;color:var(--text-mute);margin-top:2px}
+.sh56-edit-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.sh56-edit-lines{margin-top:16px}
+.sh56-edit-lines .form-control{min-width:125px}
+.sh56-summary{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:11px;background:var(--panel)}
+.sh56-summary strong{font-size:18px;color:var(--accent)}
+.sh56-note{font-size:11px;color:var(--text-mute);line-height:1.45}
+@media(max-width:700px){.sh56-edit-grid{grid-template-columns:1fr}.sh56-return-row{grid-template-columns:1fr auto}.sh56-return-row .sh56-return-value{display:none}.sh56-detail-actions>*{flex:1}.sh56-detail-actions .btn{white-space:normal}}
+</style>
+<script id="smartRetailSalesHistoryActions56Script">
+(function salesHistoryActions56(root){
+  'use strict';
+
+  const VERSION='56.0.0';
+  const EDIT_LOG_KEY='srerp_sales_history_edits_v56';
+  let installed=false;
+  let tableObserver=null;
+  let activeEditKey='';
+  let activeDetailKey='';
+
+  function key(name,fallback){
+    try{return typeof DB_KEYS!=='undefined'&&DB_KEYS&&DB_KEYS[name]?DB_KEYS[name]:fallback;}catch(_){return fallback;}
+  }
+  function keys(){return{
+    sales:key('sales','srerp_sales'),products:key('products','srerp_products'),receipts:key('receipts','srerp_receipts_v13'),
+    debts:key('debts','srerp_debts'),creditSales:key('creditSales','srerp_credit_sales_v7'),customers:key('customers','srerp_customers'),
+    returns:root.smartRetailOperationsPro?.keys?.returns||'srerp_returns_v24'
+  };}
+  function read(storageKey){
+    try{if(typeof db_get==='function'){const value=db_get(storageKey);return Array.isArray(value)?value:[];}}catch(_){}
+    try{const value=JSON.parse(localStorage.getItem(storageKey)||'[]');return Array.isArray(value)?value:[];}catch(_){return[];}
+  }
+  function write(storageKey,value){
+    if(typeof db_set==='function'){db_set(storageKey,value);return;}
+    localStorage.setItem(storageKey,JSON.stringify(value));
+  }
+  function clone(value){try{return structuredClone(value);}catch(_){return JSON.parse(JSON.stringify(value));}}
+  function n(value){const number=Number(value);return Number.isFinite(number)?number:0;}
+  function today(){const now=new Date(),offset=now.getTimezoneOffset()*60000;return new Date(now-offset).toISOString().slice(0,10);}
+  function esc(value){return String(value??'').replace(/[&<>\'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));}
+  function locale(){try{return root.smartRetailI18n?.locale?.()==='ru'?'ru':'uz';}catch(_){return'uz';}}
+  function t(uz,ru){return locale()==='ru'?ru:uz;}
+  function money(value){try{return typeof fmt==='function'?fmt(n(value))+" so'm":n(value).toLocaleString('uz-UZ')+" so'm";}catch(_){return n(value).toLocaleString('uz-UZ')+" so'm";}}
+  function notify(message,danger){
+    try{if(typeof showToast==='function'){showToast(message,danger?'bi-x-circle text-danger':undefined);return;}}catch(_){}
+    if(danger&&typeof alert==='function')alert(message);
+  }
+  function log(message){try{if(typeof doLog==='function')doLog(message);}catch(_){} }
+  function actor(){try{return authCurrentUser?.fullName||authCurrentUser?.username||activeEmployeeName||'system';}catch(_){return'system';}}
+  function orderKey(sale){return String(sale?.orderId||sale?.id||'');}
+  function aggregate(){try{return root.smartRetailOperationsPro?.aggregateSales?.()||[];}catch(_){return[];}}
+  function rowByKey(value){return aggregate().find(row=>String(row.key)===String(value))||null;}
+  function lineTaxRate(line){
+    if(Number.isFinite(Number(line?.taxRate)))return Math.max(0,Math.min(100,n(line.taxRate)));
+    try{return Math.max(0,Math.min(100,n(v7GetSettings?.().taxRate)));}catch(_){return 0;}
+  }
+  function recalculateLine(line,unitPrice){
+    const next={...line},qty=Math.max(0,n(next.qty)),price=Math.max(0,n(unitPrice)),taxRate=lineTaxRate(next);
+    next.price=price;next.total=price*qty;next.taxRate=taxRate;next.tax=next.total*taxRate/100;next.netAfterTax=Math.max(0,next.total-next.tax);
+    next.profit=next.netAfterTax-Math.max(0,n(next.cost))*qty;
+    if(Number.isFinite(Number(next.listedPrice)))next.discount=Math.max(0,n(next.listedPrice)*qty-next.total);
+    next.edited=true;next.updatedAt=new Date().toISOString();next.revision=Math.max(0,Math.trunc(n(next.revision)))+1;
+    return next;
+  }
+  function debtStatus(remaining,limit){
+    try{if(typeof v7DebtStatus==='function')return v7DebtStatus(remaining,limit);}catch(_){}
+    return remaining<=0?'Yopilgan':remaining>n(limit)?'Muammo':'Nazorat';
+  }
+  function setCreatedDate(createdAt,date){
+    const value=String(createdAt||'');
+    return date+'T'+(value.includes('T')?value.split('T')[1]:'12:00:00');
+  }
+  function orderLinesFromReturns(order,returns){
+    return returns.filter(item=>String(item.orderId||item.sale?.orderId||item.originalSale?.orderId||item.sale?.id||'')===String(order)).map(item=>item.sale||item.originalSale||item);
+  }
+  function receiptItem(line){
+    const qty=Math.max(0,n(line.qty));
+    return{sku:line.sku||'',name:line.name||line.sku||'',qty,unitPrice:n(line.price),total:n(line.total),tax:n(line.tax),cost:n(line.cost)*qty,custom:!!line.custom};
+  }
+  function syncReceipt(order,payload,activeLines,returnedLines){
+    const storage=keys(),receipts=read(storage.receipts),receipt=receipts.find(item=>String(item.orderId||item.id)===String(order));
+    if(!receipt)return null;
+    const allLines=[...activeLines,...returnedLines],total=allLines.reduce((sum,line)=>sum+n(line.total),0),tax=allLines.reduce((sum,line)=>sum+n(line.tax),0);
+    const subtotal=allLines.reduce((sum,line)=>sum+Math.max(n(line.listedPrice)||n(line.price),n(line.price))*n(line.qty),0);
+    const fullDiscount=Math.max(0,subtotal-total),oldLoyalty=Math.max(0,n(receipt.loyaltyDiscount));
+    receipt.date=payload.date;receipt.createdAt=setCreatedDate(receipt.createdAt,payload.date);receipt.customer=payload.customer;receipt.cashier=payload.cashier;receipt.payment=payload.payment;
+    receipt.items=allLines.map(receiptItem);receipt.subtotal=subtotal;receipt.total=total;receipt.tax=tax;receipt.net=Math.max(0,total-tax);
+    receipt.loyaltyDiscount=Math.min(oldLoyalty,fullDiscount);receipt.discount=Math.max(0,fullDiscount-receipt.loyaltyDiscount);
+    receipt.editNote=payload.note||'';receipt.edited=true;receipt.updatedAt=new Date().toISOString();
+    write(storage.receipts,receipts);return receipt;
+  }
+  function syncCredit(order,payload,activeLines){
+    const storage=keys(),debts=read(storage.debts),creditRows=read(storage.creditSales),customers=read(storage.customers);
+    const credit=creditRows.find(item=>String(item.orderId||'')===String(order));
+    const debt=debts.find(item=>String(item.saleOrderId||'')===String(order)||String(item.id||'')===String(credit?.debtId||''));
+    const activeTotal=activeLines.reduce((sum,line)=>sum+n(line.total),0),activeTax=activeLines.reduce((sum,line)=>sum+n(line.tax),0),activeNet=Math.max(0,activeTotal-activeTax);
+    if(debt){
+      const paid=Math.max(0,n(debt.paid));
+      debt.date=payload.date;debt.customer=payload.customer;debt.total=activeTotal;debt.paid=paid;debt.remaining=Math.max(0,activeTotal-paid);debt.overpayment=Math.max(0,paid-activeTotal);debt.note=payload.note||debt.note||'';
+      const customer=customers.find(item=>item.id===debt.customerId);debt.status=debtStatus(debt.remaining,customer?.limit||0);debt.edited=true;debt.updatedAt=new Date().toISOString();write(storage.debts,debts);
+    }
+    if(credit){
+      credit.date=payload.date;credit.customer=payload.customer;credit.cashier=payload.cashier;credit.saleTotal=activeTotal;credit.tax=activeTax;credit.netAfterTax=activeNet;
+      credit.items=activeLines.map(receiptItem);credit.itemCount=activeLines.reduce((sum,line)=>sum+n(line.qty),0);credit.note=payload.note||credit.note||'';
+      if(debt){credit.debtAmount=debt.remaining;credit.remaining=debt.remaining;credit.status=debt.status;credit.initialPaid=debt.paid;}
+      credit.edited=true;credit.updatedAt=new Date().toISOString();write(storage.creditSales,creditRows);
+    }
+    return{debt:debt||null,credit:credit||null,activeTotal};
+  }
+  function appendEditLog(entry){const rows=read(EDIT_LOG_KEY);rows.unshift(entry);write(EDIT_LOG_KEY,rows.slice(0,500));}
+  function applyOrderEdit(order,payload){
+    const storage=keys(),sales=read(storage.sales),indexes=[];
+    sales.forEach((sale,index)=>{if(orderKey(sale)===String(order))indexes.push(index);});
+    if(!indexes.length)throw new Error(t('Tahrirlanadigan faol sotuv topilmadi.','Активная продажа для редактирования не найдена.'));
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(String(payload.date||''))||payload.date>today())throw new Error(t('Sana noto‘g‘ri yoki kelajakda.','Дата некорректна или находится в будущем.'));
+    const before=indexes.map(index=>clone(sales[index]));
+    const nextSales=clone(sales);
+    for(const index of indexes){
+      const line=nextSales[index],rawPrice=payload.prices?.[line.id];
+      if(rawPrice===''||rawPrice===null||rawPrice===undefined||!Number.isFinite(Number(rawPrice))||Number(rawPrice)<0)throw new Error(t('Har bir mahsulot narxini to‘g‘ri kiriting.','Укажите корректную цену каждого товара.'));
+      const updated=recalculateLine(line,rawPrice);updated.date=payload.date;updated.customer=payload.customer||'Chakana mijoz';updated.cashier=payload.cashier||'—';updated.payment=payload.payment||line.payment||'—';updated.editNote=payload.note||'';nextSales[index]=updated;
+    }
+    const activeLines=indexes.map(index=>nextSales[index]),returnedLines=orderLinesFromReturns(order,read(storage.returns));
+    write(storage.sales,nextSales);syncReceipt(order,payload,activeLines,returnedLines);const finance=syncCredit(order,payload,activeLines);
+    appendEditLog({id:'SEDIT-'+Date.now()+'-'+Math.random().toString(36).slice(2,7),orderId:String(order),date:today(),createdAt:new Date().toISOString(),actor:actor(),note:payload.note||'',before,after:clone(activeLines)});
+    log(`Sotuv tarixi tahrirlandi: ${order} · ${money(finance.activeTotal)} · ${payload.note||'izohsiz'}`);
+    try{if(typeof renderAll==='function')renderAll();}catch(_){}
+    return{orderId:String(order),lineCount:activeLines.length,total:finance.activeTotal,before,after:activeLines};
+  }
+  function ensureReturnOption(select,sale){
+    let option=[...select.options].find(item=>item.value===sale.id),added=false;
+    if(!option){option=document.createElement('option');option.value=sale.id;option.textContent=`${sale.date||''} — ${sale.name||sale.sku||sale.id}`;select.appendChild(option);added=true;}
+    select.value=sale.id;return{option,added};
+  }
+  function returnSale(saleId,reason,requestedQty){
+    const storage=keys(),salesBefore=read(storage.sales),sale=salesBefore.find(item=>String(item.id)===String(saleId));
+    if(!sale)return false;
+    const originalQty=Math.max(0,n(sale.qty)),returnQty=requestedQty===undefined?originalQty:n(requestedQty);
+    if(!Number.isInteger(returnQty)||returnQty<=0||returnQty>originalQty)throw new Error(t(`Qaytarish miqdori 1 dan ${originalQty} gacha bo‘lishi kerak.`,`Количество возврата должно быть от 1 до ${originalQty}.`));
+    const select=document.getElementById('retSaleSelect'),reasonInput=document.getElementById('retReason');
+    if(!select||!reasonInput||typeof submitReturn!=='function')throw new Error(t('Qaytarish mexanizmi topilmadi.','Механизм возврата не найден.'));
+    const rowBefore=rowByKey(orderKey(sale)),partial=returnQty<originalQty,returnLine=partial?recalculateLine({...clone(sale),id:`${sale.id}-RET-${Date.now()}`,qty:returnQty,originalSaleId:sale.id,partialReturnOf:sale.id},sale.price):sale;
+    if(partial){
+      const nextSales=clone(salesBefore),index=nextSales.findIndex(item=>String(item.id)===String(sale.id));
+      nextSales[index]=recalculateLine({...nextSales[index],qty:originalQty-returnQty},sale.price);nextSales.push(returnLine);write(storage.sales,nextSales);
+    }
+    const previousValue=select.value,previousReason=reasonInput.value,optionState=ensureReturnOption(select,returnLine);reasonInput.value=reason||t('Mijoz qaytardi','Возврат от клиента');
+    let removed=false;
+    try{submitReturn();removed=!read(storage.sales).some(item=>String(item.id)===String(returnLine.id));if(!removed&&partial)write(storage.sales,salesBefore);}
+    catch(error){if(partial)write(storage.sales,salesBefore);throw error;}
+    finally{if(optionState.added&&optionState.option.isConnected)optionState.option.remove();reasonInput.value=previousReason;if([...select.options].some(item=>item.value===previousValue))select.value=previousValue;}
+    if(removed){
+      const remaining=read(storage.sales).filter(item=>orderKey(item)===orderKey(sale));
+      syncCredit(orderKey(sale),{date:rowBefore?.date||sale.date||today(),customer:rowBefore?.customer||sale.customer||'Chakana mijoz',cashier:rowBefore?.cashier||sale.cashier||'—',payment:rowBefore?.payment||sale.payment||'—',note:reason||t('Mijoz qaytardi','Возврат от клиента')},remaining);
+    }
+    return removed;
+  }
+  function cancelOrder(order,reason){
+    const row=rowByKey(order),lines=row?.activeLines?.slice()||[];if(!lines.length)return 0;
+    let returned=0;for(const line of lines){if(returnSale(line.id,reason))returned+=1;}
+    log(`Sotuv bekor qilindi/qaytarildi: ${order} · ${returned} qator · sabab: ${reason||'ko‘rsatilmagan'}`);
+    return returned;
+  }
+  function closeDetails(){try{const modal=document.getElementById('ops24SaleModal');bootstrap.Modal.getInstance(modal)?.hide();}catch(_){} }
+  function returnLineUi(saleId){
+    const sale=read(keys().sales).find(item=>String(item.id)===String(saleId));if(!sale){notify(t('Mahsulot allaqachon qaytarilgan.','Товар уже возвращён.'),true);return;}
+    const quantityText=prompt(t(`${sale.name||sale.sku}: qaytariladigan dona sonini kiriting (maksimum ${n(sale.qty)}):`,`«${sale.name||sale.sku}»: укажите количество для возврата (максимум ${n(sale.qty)}):`),String(n(sale.qty)));if(quantityText===null)return;
+    const quantity=Number(quantityText);if(!Number.isInteger(quantity)||quantity<=0||quantity>n(sale.qty)){notify(t(`Miqdor 1 dan ${n(sale.qty)} gacha butun son bo‘lishi kerak.`,`Количество должно быть целым числом от 1 до ${n(sale.qty)}.`),true);return;}
+    if(!confirm(t(`${sale.name||sale.sku} — ${quantity} dona qaytarilsinmi?`,`Вернуть товар «${sale.name||sale.sku}» в количестве ${quantity} шт.?`)))return;
+    const reason=prompt(t('Qaytarish sababini kiriting:','Укажите причину возврата:'),t('Mijoz qaytardi','Возврат от клиента'));if(reason===null)return;
+    try{if(!returnSale(sale.id,reason.trim(),quantity))throw new Error(t('Qaytarish yakunlanmadi.','Возврат не завершён.'));closeDetails();notify(t(`${quantity} dona mahsulot qaytarildi va qoldiq tiklandi.`,`Возвращено ${quantity} шт., остаток восстановлен.`));setTimeout(enhanceRows,0);}catch(error){notify(error.message||String(error),true);}
+  }
+  function cancelOrderUi(order){
+    const row=rowByKey(order);if(!row?.activeLines?.length){notify(t('Buyurtmada faol mahsulot qolmagan.','В заказе не осталось активных товаров.'),true);return;}
+    if(!confirm(t(`Buyurtma ${row.orderId} to‘liq bekor qilinsinmi? Barcha mahsulotlar qoldiqqa qaytariladi.`,`Полностью отменить заказ ${row.orderId}? Все товары будут возвращены на остаток.`)))return;
+    const reason=prompt(t('Bekor qilish/qaytarish sababini kiriting:','Укажите причину отмены/возврата:'),t('Mijoz xaridni qaytardi','Клиент вернул покупку'));if(reason===null)return;
+    try{const count=cancelOrder(order,reason.trim());if(!count)throw new Error(t('Bekor qilish yakunlanmadi.','Отмена не завершена.'));closeDetails();notify(t(`${count} ta sotuv qatori bekor qilindi, qoldiq tiklandi.`,`Отменено позиций: ${count}. Остаток восстановлен.`));setTimeout(enhanceRows,0);}catch(error){notify(error.message||String(error),true);}
+  }
+  function makeButton(className,icon,label,handler){const button=document.createElement('button');button.type='button';button.className=className;button.innerHTML=`<i class="bi ${icon}"></i> ${esc(label)}`;button.addEventListener('click',handler);return button;}
+  function enhanceRows(){
+    const body=document.getElementById('ops24SalesRows');if(!body)return;const map=new Map(aggregate().map(row=>[String(row.key),row]));
+    for(const tr of body.querySelectorAll('tr')){
+      const orderButton=tr.querySelector('.ops24-order'),cell=tr.lastElementChild;if(!orderButton||!cell)continue;const order=orderButton.textContent.trim(),row=map.get(order);if(!row)continue;
+      cell.querySelector('.sh56-actions')?.remove();const actions=document.createElement('div');actions.className='sh56-actions';
+      if(row.activeLines?.length){actions.appendChild(makeButton('btn btn-outline-erp btn-sm-erp','bi-pencil-square',t('Tahrirlash','Редактировать'),()=>openEdit(order)));actions.appendChild(makeButton('btn btn-outline-danger btn-sm-erp','bi-x-octagon',t('Bekor qilish','Отменить'),()=>cancelOrderUi(order)));}
+      cell.appendChild(actions);
+    }
+  }
+  function paymentOptions(current,locked){
+    const values=locked?['Qarz']:[...new Set(['Naqd','Karta','Aralash',current].filter(Boolean))];
+    return values.map(value=>`<option value="${esc(value)}" ${value===current?'selected':''}>${esc(value)}</option>`).join('');
+  }
+  function modal(){return document.getElementById('sh56EditModal');}
+  function openEdit(order){
+    const row=rowByKey(order);if(!row?.activeLines?.length){notify(t('Tahrirlanadigan faol sotuv topilmadi.','Активная продажа для редактирования не найдена.'),true);return;}
+    activeEditKey=String(order);const storage=keys(),debts=read(storage.debts),credit=read(storage.creditSales).find(item=>String(item.orderId||'')===activeEditKey),locked=debts.some(item=>String(item.saleOrderId||'')===activeEditKey||String(item.id||'')===String(credit?.debtId||''));
+    const body=document.getElementById('sh56EditBody');
+    body.innerHTML=`<div class="sh56-edit-grid"><div><label class="form-label">${esc(t('Buyurtma','Заказ'))}</label><input class="form-control mono" value="${esc(row.orderId)}" readonly></div><div><label class="form-label">${esc(t('Sana','Дата'))}</label><input class="form-control" id="sh56EditDate" type="date" max="${today()}" value="${esc(row.date)}" required></div><div><label class="form-label">${esc(t('Mijoz','Клиент'))}</label><input class="form-control" id="sh56EditCustomer" value="${esc(row.customer)}"></div><div><label class="form-label">${esc(t('Kassir','Кассир'))}</label><input class="form-control" id="sh56EditCashier" value="${esc(row.cashier)}"></div><div><label class="form-label">${esc(t('To‘lov','Оплата'))}</label><select class="form-select" id="sh56EditPayment" ${locked?'disabled':''}>${paymentOptions(row.payment,locked)}</select>${locked?`<div class="sh56-note mt-1">${esc(t('Qarzga sotuvda to‘lov turi qarz yozuvi sabab bloklangan.','Для продажи в долг способ оплаты заблокирован из-за записи задолженности.'))}</div>`:''}</div><div><label class="form-label">${esc(t('Izoh','Комментарий'))}</label><input class="form-control" id="sh56EditNote" value="${esc(row.activeLines[0]?.editNote||'')}" placeholder="${esc(t('Tahrirlash sababi','Причина редактирования'))}"></div></div><div class="sh56-edit-lines"><div class="section-title mb-2">${esc(t('Mahsulotlar va haqiqiy sotuv narxi','Товары и фактическая цена продажи'))}</div><div class="table-responsive"><table class="table table-sm"><thead><tr><th>SKU</th><th>${esc(t('Mahsulot','Товар'))}</th><th>${esc(t('Miqdor','Количество'))}</th><th>${esc(t('Haqiqiy narx','Фактическая цена'))}</th><th>${esc(t('Jami','Итого'))}</th></tr></thead><tbody>${row.activeLines.map(line=>`<tr><td class="mono">${esc(line.sku)}</td><td>${esc(line.name)}</td><td>${n(line.qty)}</td><td><input class="form-control sh56-price" type="number" min="0" step="0.01" data-sale-id="${esc(line.id)}" data-qty="${n(line.qty)}" value="${n(line.price)}"></td><td class="mono sh56-line-total">${esc(money(n(line.price)*n(line.qty)))}</td></tr>`).join('')}</tbody></table></div><div class="sh56-note">${esc(t('Miqdorni kamaytirish yoki mahsulotni qaytarish uchun “Qaytarish” amalidan foydalaning — qoldiq avtomatik tiklanadi.','Чтобы уменьшить количество или вернуть товар, используйте действие «Возврат» — остаток восстановится автоматически.'))}</div><div class="sh56-summary"><span>${esc(t('Yangilangan sotuv summasi','Обновлённая сумма продажи'))}</span><strong id="sh56EditTotal">0 so‘m</strong></div></div>`;
+    body.querySelectorAll('.sh56-price').forEach(input=>input.addEventListener('input',refreshEditTotal));refreshEditTotal();
+    document.getElementById('sh56EditModalTitle').textContent=t('Sotuv tafsilotlari — tahrirlash','Детали продажи — редактирование');document.getElementById('sh56SaveEdit').innerHTML=`<i class="bi bi-check2-circle"></i> ${esc(t('Saqlash','Сохранить'))}`;
+    new bootstrap.Modal(modal()).show();
+  }
+  function refreshEditTotal(){
+    let total=0;document.querySelectorAll('#sh56EditBody .sh56-price').forEach(input=>{const value=Math.max(0,n(input.value))*Math.max(0,n(input.dataset.qty));total+=value;const cell=input.closest('tr')?.querySelector('.sh56-line-total');if(cell)cell.textContent=money(value);});
+    const target=document.getElementById('sh56EditTotal');if(target)target.textContent=money(total);
+  }
+  function saveEditUi(){
+    if(!activeEditKey)return;const prices={};document.querySelectorAll('#sh56EditBody .sh56-price').forEach(input=>{prices[input.dataset.saleId]=input.value;});
+    const row=rowByKey(activeEditKey),paymentElement=document.getElementById('sh56EditPayment');const payload={date:document.getElementById('sh56EditDate')?.value||'',customer:document.getElementById('sh56EditCustomer')?.value.trim()||'Chakana mijoz',cashier:document.getElementById('sh56EditCashier')?.value.trim()||'—',payment:paymentElement?.value||row?.payment||'—',note:document.getElementById('sh56EditNote')?.value.trim()||'',prices};
+    try{const result=applyOrderEdit(activeEditKey,payload);bootstrap.Modal.getInstance(modal())?.hide();notify(t(`Sotuv yangilandi: ${money(result.total)}.`,`Продажа обновлена: ${money(result.total)}.`));setTimeout(enhanceRows,0);}catch(error){notify(error.message||String(error),true);}
+  }
+  function enhanceDetails(order){
+    activeDetailKey=String(order);const row=rowByKey(order),body=document.getElementById('ops24SaleBody');if(!row||!body)return;body.querySelector('.sh56-detail-actions')?.remove();body.querySelector('.sh56-return-panel')?.remove();if(!row.activeLines?.length)return;
+    const actions=document.createElement('div');actions.className='sh56-detail-actions';actions.appendChild(makeButton('btn btn-outline-erp','bi-pencil-square',t('Tahrirlash','Редактировать'),()=>openEdit(order)));actions.appendChild(makeButton('btn btn-outline-danger','bi-x-octagon',t('Buyurtmani bekor qilish','Отменить заказ'),()=>cancelOrderUi(order)));body.prepend(actions);
+    const panel=document.createElement('div');panel.className='sh56-return-panel';panel.innerHTML=`<div class="section-title mb-2">${esc(t('Mahsulotni qaytarish','Возврат товара'))}</div><div class="sh56-note mb-2">${esc(t('Qaytarilgan mahsulot WMS/Product Master qoldig‘iga avtomatik tiklanadi va qaytarishlar reestrida qoladi.','Возвращённый товар автоматически восстанавливается в остатках WMS/Product Master и сохраняется в реестре возвратов.'))}</div>`;
+    row.activeLines.forEach(line=>{const item=document.createElement('div');item.className='sh56-return-row';item.innerHTML=`<div><b>${esc(line.name||line.sku)}</b><small>${esc(line.sku)} · ${n(line.qty)} ${esc(t('dona','шт.'))}</small></div><div class="mono sh56-return-value">${esc(money(line.total))}</div>`;item.appendChild(makeButton('btn btn-outline-danger btn-sm-erp','bi-arrow-return-left',t('Qaytarish','Возврат'),()=>returnLineUi(line.id)));panel.appendChild(item);});body.appendChild(panel);
+  }
+  function createModal(){
+    if(modal())return;document.body.insertAdjacentHTML('beforeend',`<div class="modal fade" id="sh56EditModal" tabindex="-1"><div class="modal-dialog modal-xl modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h6 class="modal-title fw-bold" id="sh56EditModalTitle"></h6><button class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div><div class="modal-body" id="sh56EditBody"></div><div class="modal-footer"><button class="btn btn-outline-erp" data-bs-dismiss="modal">${esc(t('Bekor qilish','Отмена'))}</button><button class="btn btn-accent" id="sh56SaveEdit" type="button"></button></div></div></div></div>`);document.getElementById('sh56SaveEdit')?.addEventListener('click',saveEditUi);
+  }
+  function install(){
+    if(installed)return;const body=document.getElementById('ops24SalesRows');if(!body){setTimeout(install,60);return;}installed=true;createModal();
+    const baseOpen=root.opsOpenSaleDetails;if(typeof baseOpen==='function'){root.opsOpenSaleDetails=function salesHistoryDetails56(order){const result=baseOpen.apply(this,arguments);setTimeout(()=>enhanceDetails(order),0);return result;};}
+    tableObserver=new MutationObserver(()=>enhanceRows());tableObserver.observe(body,{childList:true,subtree:true});enhanceRows();
+    root.addEventListener?.('smart-retail-language-change',()=>{enhanceRows();if(activeDetailKey)enhanceDetails(activeDetailKey);});
+  }
+  root.smartRetailSalesHistoryActions=Object.freeze({version:VERSION,editLogKey:EDIT_LOG_KEY,recalculateLine,applyOrderEdit,returnSale,cancelOrder,enhanceRows,openEdit});
+  if(typeof document!=='undefined'){if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',install,{once:true});else install();}
+})(typeof window!=='undefined'?window:globalThis);
+</script>
+<!-- SMART_RETAIL_SALES_HISTORY_ACTIONS_56_END -->
+
 <!-- SMART_RETAIL_ERP_I18N_53_BEGIN -->
 <script id="smartRetailErpI18n53">
 (function smartRetailErpI18nSupplement53(){
@@ -14778,5 +15093,156 @@ input[type="file"][data-srerp-file-invalid="1"]{border-color:var(--danger,#ef5b6
 })(typeof window!=='undefined'?window:globalThis);
 </script>
 <!-- SMART_RETAIL_ERP_FILE_UPLOAD_GUARD_54_END -->
+<!-- SMART_RETAIL_FAST_I18N_57_BEGIN -->
+<script id="smartRetailFastI18n57">
+(function smartRetailFastI18n57(root){
+  'use strict';
+  if(root.smartRetailFastI18n57)return;
+
+  const VERSION=57;
+  const LEGACY_KEY='srerp_interface_language_v23';
+  const STORAGE_KEY='srerp_interface_language_fast_v57';
+  const LANGUAGES=new Set(['uz','ru']);
+  const EXCLUDED=new Set(['SCRIPT','STYLE','TEXTAREA','CODE','PRE','TEMPLATE','NOSCRIPT']);
+  const ATTRIBUTES=['placeholder','title','aria-label','alt'];
+  const originalTexts=new WeakMap(),originalAttributes=new WeakMap();
+  const legacy=root.smartRetailI18n||null;
+  const supplement=root.smartRetailErpI18nSupplement||null;
+  const cache=new Map();
+  let locale='uz',observer=null,queue=[],cursor=0,generation=0,scheduled=false,applying=false;
+
+  function read(key){try{return root.localStorage&&root.localStorage.getItem(key)||'';}catch(_){return'';}}
+  function write(key,value){try{root.localStorage&&root.localStorage.setItem(key,value);return true;}catch(_){return false;}}
+  function valid(value){return LANGUAGES.has(value)?value:'';}
+  function readLocale(){return valid(read(STORAGE_KEY))||valid(legacy&&typeof legacy.locale==='function'?legacy.locale():'')||'uz';}
+  function rememberCache(key,value){if(cache.size>=6000)cache.delete(cache.keys().next().value);cache.set(key,value);return value;}
+  function translate(value,target){
+    const text=String(value==null?'':value),next=valid(target)||locale;
+    if(next!=='ru'||!text.trim())return text;
+    const key=next+'\u0000'+text;if(cache.has(key))return cache.get(key);
+    let output=text;
+    try{if(supplement&&typeof supplement.translate==='function')output=supplement.translate(output,'ru');}catch(_){}
+    try{if(legacy&&typeof legacy.translate==='function')output=legacy.translate(output,'ru');}catch(_){}
+    return rememberCache(key,output);
+  }
+  function ignored(node){
+    let parent=node&&(node.nodeType===1?node:node.parentElement||node.parentNode);
+    while(parent&&parent!==document){
+      if(EXCLUDED.has(String(parent.tagName||'').toUpperCase()))return true;
+      if(parent.hasAttribute&&parent.hasAttribute('data-i18n-skip'))return true;
+      parent=parent.parentElement||parent.parentNode;
+    }
+    return false;
+  }
+  function textJob(node,refresh){
+    if(!node||node.nodeType!==3||ignored(node)||!String(node.nodeValue||'').trim())return;
+    if(!originalTexts.has(node)||refresh)originalTexts.set(node,String(node.nodeValue));
+    const source=originalTexts.get(node),output=locale==='ru'?translate(source,'ru'):source;
+    if(node.nodeValue!==output)node.nodeValue=output;
+  }
+  function attributeJob(element,refresh){
+    if(!element||element.nodeType!==1||ignored(element))return;
+    let saved=originalAttributes.get(element);if(!saved){saved=Object.create(null);originalAttributes.set(element,saved);}
+    for(const name of ATTRIBUTES){
+      if(!element.hasAttribute||!element.hasAttribute(name))continue;
+      if(!(name in saved)||refresh)saved[name]=element.getAttribute(name);
+      const source=saved[name],output=locale==='ru'?translate(source,'ru'):source;
+      if(element.getAttribute(name)!==output)element.setAttribute(name,output);
+    }
+    if(element.matches&&element.matches('input[type="button"][value],input[type="submit"][value],input[type="reset"][value]')){
+      const name='value';if(!(name in saved)||refresh)saved[name]=element.getAttribute(name);
+      const source=saved[name],output=locale==='ru'?translate(source,'ru'):source;
+      if(element.getAttribute(name)!==output)element.setAttribute(name,output);
+    }
+  }
+  function enqueue(node,refresh){
+    if(!node||ignored(node))return;
+    const stack=[node];
+    while(stack.length){
+      const current=stack.pop();if(!current||ignored(current))continue;
+      if(current.nodeType===3){if(String(current.nodeValue||'').trim())queue.push({kind:'text',node:current,refresh:!!refresh,generation});continue;}
+      if(current.nodeType!==1&&current!==document&&current!==document.body)continue;
+      if(current.nodeType===1)queue.push({kind:'attributes',node:current,refresh:!!refresh,generation});
+      const children=current.childNodes||[];for(let index=children.length-1;index>=0;index-=1)stack.push(children[index]);
+    }
+  }
+  function observe(){
+    if(!observer||!document.body)return;
+    observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:[...ATTRIBUTES,'value']});
+  }
+  function requestFlush(){
+    if(scheduled)return;scheduled=true;
+    const schedule=typeof root.requestAnimationFrame==='function'?root.requestAnimationFrame.bind(root):callback=>root.setTimeout(callback,0);
+    schedule(flush);
+  }
+  function flush(){
+    scheduled=false;if(observer){observer.disconnect();observer.takeRecords();}
+    applying=true;const started=root.performance&&typeof root.performance.now==='function'?root.performance.now():Date.now();let processed=0;
+    try{
+      while(cursor<queue.length&&processed<48){
+        const job=queue[cursor++];if(job.generation===generation){if(job.kind==='text')textJob(job.node,job.refresh);else attributeJob(job.node,job.refresh);}
+        processed+=1;const now=root.performance&&typeof root.performance.now==='function'?root.performance.now():Date.now();if(now-started>=8)break;
+      }
+    }finally{applying=false;observe();}
+    if(cursor<queue.length)requestFlush();else{queue=[];cursor=0;}
+  }
+  function syncControls(){
+    for(const button of document.querySelectorAll('.srerp-language-option')){
+      const selected=button.getAttribute('data-locale')===locale;
+      button.classList.toggle('is-active',selected);button.setAttribute('aria-pressed',selected?'true':'false');
+    }
+  }
+  function bindControls(scope){
+    const source=scope&&scope.querySelectorAll?scope:document;
+    for(const button of source.querySelectorAll('.srerp-language-option:not([data-fast-i18n="57"])')){
+      const clone=button.cloneNode(true);clone.setAttribute('data-fast-i18n','57');
+      clone.addEventListener('click',event=>{event.preventDefault();setLocale(clone.getAttribute('data-locale'),'user');});
+      button.replaceWith(clone);
+    }
+    syncControls();
+  }
+  function syncRelatives(next,source){
+    try{
+      const frame=document.getElementById('smartRetailErpFrame'),child=frame&&frame.contentWindow&&frame.contentWindow.smartRetailFastI18n57;
+      if(child&&typeof child.setLocale==='function'&&child.locale()!==next)child.setLocale(next,'parent-fast');
+    }catch(_){}
+    try{
+      const parent=root.parent&&root.parent!==root&&root.parent.smartRetailFastI18n57;
+      if(source!=='parent-fast'&&parent&&typeof parent.setLocale==='function'&&parent.locale()!==next)parent.setLocale(next,'child-fast');
+    }catch(_){}
+  }
+  function setLocale(next,source){
+    if(!LANGUAGES.has(next))return locale;
+    locale=next;write(STORAGE_KEY,next);cache.clear();generation+=1;queue=[];cursor=0;
+    document.documentElement.lang=next;document.documentElement.setAttribute('data-language',next);document.documentElement.setAttribute('data-erp-language',next);
+    bindControls(document);if(document.body)enqueue(document.body,false);requestFlush();syncRelatives(next,source);
+    try{root.dispatchEvent(new root.CustomEvent('smart-retail-fast-language-change',{detail:{locale:next,source:source||'user'}}));}catch(_){}
+    return locale;
+  }
+  function refresh(){generation+=1;queue=[];cursor=0;if(document.body)enqueue(document.body,false);requestFlush();return locale;}
+  function install(){
+    if(read(LEGACY_KEY)!=='uz')write(LEGACY_KEY,'uz');
+    locale=readLocale();
+    const api={version:VERSION,fast:true,storageKey:STORAGE_KEY,supported:()=>['uz','ru'],locale:()=>locale,translate,refresh,setLocale,legacy};
+    root.smartRetailI18n=api;root.smartRetailFastI18n57=Object.freeze({version:VERSION,locale:()=>locale,setLocale,refresh,pending:()=>Math.max(0,queue.length-cursor)});
+    bindControls(document);
+    observer=typeof MutationObserver==='function'?new MutationObserver(records=>{
+      if(applying)return;
+      for(const record of records){
+        if(record.type==='characterData')queue.push({kind:'text',node:record.target,refresh:true,generation});
+        else if(record.type==='attributes')queue.push({kind:'attributes',node:record.target,refresh:true,generation});
+        else for(const node of record.addedNodes||[])enqueue(node,false);
+      }
+      bindControls(document);requestFlush();
+    }):null;
+    observe();document.documentElement.lang=locale;document.documentElement.setAttribute('data-language',locale);document.documentElement.setAttribute('data-erp-language',locale);
+    if(locale==='ru')refresh();else syncControls();
+    root.addEventListener&&root.addEventListener('storage',event=>{if(event.key===STORAGE_KEY&&LANGUAGES.has(event.newValue)&&event.newValue!==locale)setLocale(event.newValue,'storage-fast');});
+  }
+  if(typeof document!=='undefined'){if(document.body)install();else document.addEventListener('DOMContentLoaded',install,{once:true});}
+})(typeof window!=='undefined'?window:globalThis);
+</script>
+<!-- SMART_RETAIL_FAST_I18N_57_END -->
+
 </body>
 </html>
