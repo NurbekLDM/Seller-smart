@@ -14713,6 +14713,7 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
   const EDIT_LOG_KEY='srerp_sales_history_edits_v56';
   let installed=false;
   let tableObserver=null;
+  let enhanceQueued=false;
   let activeEditKey='';
   let activeDetailKey='';
 
@@ -14877,11 +14878,22 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
   function makeButton(className,icon,label,handler){const button=document.createElement('button');button.type='button';button.className=className;button.innerHTML=`<i class="bi ${icon}"></i> ${esc(label)}`;button.addEventListener('click',handler);return button;}
   function enhanceRows(){
     const body=document.getElementById('ops24SalesRows');if(!body)return;const map=new Map(aggregate().map(row=>[String(row.key),row]));
-    for(const tr of body.querySelectorAll('tr')){
-      const orderButton=tr.querySelector('.ops24-order'),cell=tr.lastElementChild;if(!orderButton||!cell)continue;const order=orderButton.textContent.trim(),row=map.get(order);if(!row)continue;
-      cell.querySelector('.sh56-actions')?.remove();const actions=document.createElement('div');actions.className='sh56-actions';
-      if(row.activeLines?.length){actions.appendChild(makeButton('btn btn-outline-erp btn-sm-erp','bi-pencil-square',t('Tahrirlash','Редактировать'),()=>openEdit(order)));actions.appendChild(makeButton('btn btn-outline-danger btn-sm-erp','bi-x-octagon',t('Bekor qilish','Отменить'),()=>cancelOrderUi(order)));}
-      cell.appendChild(actions);
+    /* SR_SH56_LOOP_GUARD: this function rewrites nodes INSIDE the subtree its
+       own MutationObserver watches (remove + append per row). Without
+       disconnecting first, every call retriggers the observer and the
+       microtask loop never yields — with real sales rows the ERP (and the
+       whole tab, same thread) wedges the instant it boots. Disconnect,
+       rewrite, drain the record queue, reconnect. */
+    if(tableObserver)tableObserver.disconnect();
+    try{
+      for(const tr of body.querySelectorAll('tr')){
+        const orderButton=tr.querySelector('.ops24-order'),cell=tr.lastElementChild;if(!orderButton||!cell)continue;const order=orderButton.textContent.trim(),row=map.get(order);if(!row)continue;
+        cell.querySelector('.sh56-actions')?.remove();const actions=document.createElement('div');actions.className='sh56-actions';
+        if(row.activeLines?.length){actions.appendChild(makeButton('btn btn-outline-erp btn-sm-erp','bi-pencil-square',t('Tahrirlash','Редактировать'),()=>openEdit(order)));actions.appendChild(makeButton('btn btn-outline-danger btn-sm-erp','bi-x-octagon',t('Bekor qilish','Отменить'),()=>cancelOrderUi(order)));}
+        cell.appendChild(actions);
+      }
+    }finally{
+      if(tableObserver){tableObserver.takeRecords();tableObserver.observe(body,{childList:true,subtree:true});}
     }
   }
   function paymentOptions(current,locked){
@@ -14919,7 +14931,7 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
   function install(){
     if(installed)return;const body=document.getElementById('ops24SalesRows');if(!body){setTimeout(install,60);return;}installed=true;createModal();
     const baseOpen=root.opsOpenSaleDetails;if(typeof baseOpen==='function'){root.opsOpenSaleDetails=function salesHistoryDetails56(order){const result=baseOpen.apply(this,arguments);setTimeout(()=>enhanceDetails(order),0);return result;};}
-    tableObserver=new MutationObserver(()=>enhanceRows());tableObserver.observe(body,{childList:true,subtree:true});enhanceRows();
+    tableObserver=new MutationObserver(()=>{if(enhanceQueued)return;enhanceQueued=true;setTimeout(()=>{enhanceQueued=false;enhanceRows();},0);});tableObserver.observe(body,{childList:true,subtree:true});enhanceRows();
     root.addEventListener?.('smart-retail-language-change',()=>{enhanceRows();if(activeDetailKey)enhanceDetails(activeDetailKey);});
   }
   root.smartRetailSalesHistoryActions=Object.freeze({version:VERSION,editLogKey:EDIT_LOG_KEY,recalculateLine,applyOrderEdit,returnSale,cancelOrder,enhanceRows,openEdit});
