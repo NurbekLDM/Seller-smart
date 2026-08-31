@@ -20,6 +20,12 @@
 
   var ACTIVE_USER_KEY = 'sr-active-user-id';
   var ERP_PROFILE_KEY = 'sr-erp-profile';
+  /* Which Supabase project this terminal's local data belongs to — see
+     fenceForeignProject() below and the same fence in auth-guard.js. */
+  var PROJECT_REF_KEY = 'sr-supabase-ref';
+  var PROJECT_REF = (function () {
+    try { return new URL(config.supabaseUrl).hostname.split('.')[0] || ''; } catch (_) { return ''; }
+  })();
   var ANALYTICS_KEY = 'srerp_analytics_parent_state';
   // How long logout waits for the final sync push before giving up on it.
   var LOGOUT_FLUSH_MS = 8000;
@@ -38,7 +44,10 @@
     try {
       for (var index = 0; index < localStorage.length; index += 1) {
         var key = localStorage.key(index);
-        if (key && key.indexOf('sb-') === 0 && key.slice(-11) === '-auth-token') {
+        // This project's session only — a token left by a previous project
+        // names a user the current one has never heard of.
+        if (key && key.indexOf('sb-') === 0 && key.slice(-11) === '-auth-token'
+            && (!PROJECT_REF || key === 'sb-' + PROJECT_REF + '-auth-token')) {
           var value = JSON.parse(localStorage.getItem(key) || 'null');
           var user = (value && value.user) || (value && value.currentSession && value.currentSession.user);
           if (user && user.id) return { id: user.id, email: user.email || '' };
@@ -176,7 +185,51 @@
     } catch (_) { /* ERP not booted yet */ }
   }
 
+  /* Drop everything a previous Supabase project left on this terminal, once,
+     on the first load after the project changes. Same fence as
+     auth-guard.js — a till reached through /erp.html never loads that file,
+     so it needs its own copy. See the long note there for why a stale
+     `sb-<oldref>-auth-token` is dangerous rather than merely untidy. */
+  function fenceForeignProject() {
+    if (!PROJECT_REF) return;
+    var foreign = [];
+    var previous = null;
+    try {
+      previous = localStorage.getItem(PROJECT_REF_KEY);
+      for (var index = 0; index < localStorage.length; index += 1) {
+        var key = localStorage.key(index);
+        if (key && key.indexOf('sb-') === 0 && key.indexOf('sb-' + PROJECT_REF + '-') !== 0) {
+          foreign.push(key);
+        }
+      }
+    } catch (_) { return; /* storage unreadable — nothing safe to do */ }
+
+    if (!foreign.length && previous !== null && previous === PROJECT_REF) return;
+    if (!foreign.length) {
+      try { localStorage.setItem(PROJECT_REF_KEY, PROJECT_REF); } catch (_) { /* ignore */ }
+      return;
+    }
+
+    foreign.forEach(function (key) {
+      try { localStorage.removeItem(key); } catch (_) { /* ignore */ }
+    });
+    wipeLocalWorkspace();
+    try {
+      localStorage.removeItem(ACTIVE_USER_KEY);
+      localStorage.removeItem(ERP_PROFILE_KEY);
+      localStorage.removeItem('sr-username');
+      localStorage.removeItem('sr-ws-revision');
+      localStorage.removeItem('sr-conflict-backup');
+      localStorage.removeItem('sr-pending-changes');
+      localStorage.setItem(PROJECT_REF_KEY, PROJECT_REF);
+    } catch (_) { /* ignore */ }
+    setAuthCookie('', 0);
+    console.warn('Smart Retail ERP: cleared local data left by a previous Supabase project.');
+  }
+
   /* ------------------------------ boot ---------------------------------- */
+
+  fenceForeignProject();
 
   var stored = storedSessionInfo();
   if (!stored) {

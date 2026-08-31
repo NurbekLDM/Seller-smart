@@ -9,8 +9,13 @@ export const config = {
 };
 
 export default async function middleware(request) {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+  /* Trimmed: a value pasted into the Vercel dashboard with a stray space or
+     newline is invisible there, but an untrimmed URL makes fetch() throw and
+     an untrimmed key makes every validation 401 — both land the user on the
+     login page with a perfectly good session, which is indistinguishable
+     from a wrong project. */
+  const supabaseUrl = (process.env.SUPABASE_URL || '').trim();
+  const supabaseAnonKey = (process.env.SUPABASE_ANON_KEY || '').trim();
 
   // Not configured yet (first deploy before env vars are set): let the
   // client-side guard handle it. No data is reachable without Supabase anyway.
@@ -21,14 +26,22 @@ export default async function middleware(request) {
   const token = match ? decodeURIComponent(match[1]) : '';
 
   if (token) {
+    const endpoint = `${supabaseUrl.replace(/\/+$/, '')}/auth/v1/user`;
     try {
-      const response = await fetch(`${supabaseUrl.replace(/\/$/, '')}/auth/v1/user`, {
+      const response = await fetch(endpoint, {
         headers: { apikey: supabaseAnonKey, authorization: `Bearer ${token}` }
       });
       if (response.ok) return; // valid session — serve the app
-    } catch (_) {
-      // Supabase unreachable: fall through to the login page, which will
-      // show its own connection error.
+      /* Surfaces in Vercel → Deployment → Runtime Logs. Never log the token
+         or the key: the endpoint and the status are enough to tell a wrong
+         project (401) from a wrong URL (404) from an outage (5xx). */
+      console.warn('sr-auth: token refused', JSON.stringify({
+        endpoint, status: response.status
+      }));
+    } catch (error) {
+      console.warn('sr-auth: validation failed', JSON.stringify({
+        endpoint, error: String(error && error.message || error)
+      }));
     }
   }
 

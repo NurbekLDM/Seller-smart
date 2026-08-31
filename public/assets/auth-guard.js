@@ -48,6 +48,13 @@
   var PENDING_CHANGES_KEY = 'sr-pending-changes';
   var onLoginPage = /login/.test(window.location.pathname);
   var signingOut = false;
+  /* Which Supabase project this browser's local data belongs to. Every
+     stored artefact — the supabase-js session, the workspace snapshot, the
+     sync revision markers — is meaningful against ONE project only. */
+  var PROJECT_REF_KEY = 'sr-supabase-ref';
+  var PROJECT_REF = (function () {
+    try { return new URL(config.supabaseUrl).hostname.split('.')[0] || ''; } catch (_) { return ''; }
+  })();
 
   function setAuthCookie(token, maxAgeSeconds) {
     var parts = [
@@ -69,7 +76,10 @@
     try {
       for (var index = 0; index < localStorage.length; index += 1) {
         var key = localStorage.key(index);
-        if (key && key.indexOf('sb-') === 0 && key.slice(-11) === '-auth-token') {
+        // This project's session only — a token left by a previous project
+        // names a user the current one has never heard of.
+        if (key && key.indexOf('sb-') === 0 && key.slice(-11) === '-auth-token'
+            && (!PROJECT_REF || key === 'sb-' + PROJECT_REF + '-auth-token')) {
           var raw = localStorage.getItem(key);
           if (!raw) continue;
           var value = JSON.parse(raw);
@@ -245,10 +255,68 @@
     } catch (_) { /* ignore */ }
   }
 
+  /* Drop everything a previous Supabase project left behind, once, on the
+     first load after the project changes.
+
+     Without this the browser still holds `sb-<oldref>-auth-token`, the old
+     workspace snapshot, and sync revision markers that count against a
+     database this app no longer talks to. The stale token names a user the
+     new project has never heard of, so the ownership check compares the
+     wrong id, skips its wipe, and the previous project's workspace is
+     pushed up as version 1 of a fresh one. The alternative is asking every
+     user to clear site data by hand, which a shop floor cannot be asked to
+     do — so detect it here instead.
+
+     The signal is a Supabase session key carrying a different project ref:
+     unambiguous, and present on exactly the browsers that need clearing.
+     Where there is no such evidence nothing is touched, because unsent
+     local work is the one thing that must never be destroyed on a guess. */
+  function fenceForeignProject() {
+    if (!PROJECT_REF) return;
+    var foreign = [];
+    var previous = null;
+    try {
+      previous = localStorage.getItem(PROJECT_REF_KEY);
+      for (var index = 0; index < localStorage.length; index += 1) {
+        var key = localStorage.key(index);
+        if (key && key.indexOf('sb-') === 0 && key.indexOf('sb-' + PROJECT_REF + '-') !== 0) {
+          foreign.push(key);
+        }
+      }
+    } catch (_) { return; /* storage unreadable — nothing safe to do */ }
+
+    if (!foreign.length && previous !== null && previous === PROJECT_REF) return;
+    if (!foreign.length) {
+      // A browser with nothing to judge: just record where it stands now.
+      try { localStorage.setItem(PROJECT_REF_KEY, PROJECT_REF); } catch (_) { /* ignore */ }
+      return;
+    }
+
+    foreign.forEach(function (key) {
+      try { localStorage.removeItem(key); } catch (_) { /* ignore */ }
+    });
+    wipeLocalStorageSync();
+    try { indexedDB.deleteDatabase('uzum-analytics-pro'); } catch (_) { /* ignore */ }
+    try {
+      localStorage.removeItem(ACTIVE_USER_KEY);
+      localStorage.removeItem(USERNAME_CACHE_KEY);
+      localStorage.removeItem(PENDING_CHANGES_KEY);
+      localStorage.removeItem('sr-erp-profile');
+      localStorage.removeItem('sr-ws-revision');
+      localStorage.removeItem('sr-conflict-backup');
+      localStorage.setItem(PROJECT_REF_KEY, PROJECT_REF);
+    } catch (_) { /* ignore */ }
+    clearInternalSession();
+    setAuthCookie('', 0);
+    console.warn('Smart Retail: cleared local data left by a previous Supabase project.');
+  }
+
   /* ------------------------- synchronous boot ---------------------------- */
   /* Runs before the app's scripts parse: enforce workspace ownership and
      seed the internal sessions, so the app starts in the right state on the
      FIRST load — no wipe-reloads, no seed-reloads. */
+
+  fenceForeignProject();
 
   var storedSession = onLoginPage ? null : storedSessionInfo();
   if (storedSession) {
