@@ -407,12 +407,10 @@ body:not(.auth-locked) #authLoginOverlay{display:none;}
     <div class="nav-link-erp" data-view="ai"><i class="bi bi-stars"></i> AI Analytics <span class="badge-mini" id="aiCountBadge">0</span></div>
   </div>
 
-  <div class="nav-group" style="margin-top:10px; border-top:1px solid var(--border); padding-top:14px;">
-    <div class="nav-link-erp" onclick="exportAllData()"><i class="bi bi-file-earmark-excel"></i> Excel eksport (.xlsx)</div>
-    <div class="nav-link-erp" onclick="document.getElementById('importFile').click()"><i class="bi bi-upload"></i> Excel import</div>
-    <input type="file" id="importFile" accept=".xlsx,.xls,.csv" style="display:none">
-    <div class="nav-link-erp" onclick="v18ResetStoreData()"><i class="bi bi-eraser"></i> Yangi do‘kon holatiga tozalash</div>
-  </div>
+  <!-- SR_BACKUP_MENU_TRIM (build-time patch — scripts/build.mjs): the
+       backup / import / reset sidebar group is removed. The hidden input
+       stays: the base ERP binds its change handler to it unguarded. -->
+  <input type="file" id="importFile" accept=".xlsx,.xls,.csv" style="display:none">
 </nav>
 
 <header id="topheader">
@@ -6944,15 +6942,14 @@ document.addEventListener('DOMContentLoaded',()=>{
   };
 
   function v201InstallUi(){
-    if(document.getElementById('v201HtmlExportAction'))return;
-    const groups=[...document.querySelectorAll('#sidebar .nav-group')];
-    const actionGroup=groups.find(g=>g.querySelector('[onclick="exportAllData()"]'))||groups[groups.length-1];
-    if(actionGroup){
-      const reset=[...actionGroup.querySelectorAll('.nav-link-erp')].find(el=>String(el.getAttribute('onclick')||'').includes('v18ResetStoreData'));
-      const html=`<div class="nav-link-erp" id="v201HtmlExportAction" onclick="v8ExportPortableHtml()"><i class="bi bi-filetype-html"></i> To‘liq HTML backup</div><div class="nav-link-erp" id="v201HtmlImportAction" onclick="document.getElementById('v201HtmlImportFile').click()"><i class="bi bi-file-earmark-arrow-up"></i> HTML backupni tiklash</div><input type="file" id="v201HtmlImportFile" accept=".html,.htm,.json,.srerp" style="display:none">`;
-      if(reset)reset.insertAdjacentHTML('beforebegin',html);else actionGroup.insertAdjacentHTML('beforeend',html);
-      document.getElementById('v201HtmlImportFile')?.addEventListener('change',v8ImportPortableFile);
-    }
+    /* SR_BACKUP_MENU_TRIM (build-time patch — scripts/build.mjs): the two
+       sidebar entries are gone; only the hidden file input is installed, so
+       the Sozlamalar card's restore button still has something to open. The
+       install guard keys off that input instead of the removed link. */
+    if(document.getElementById('v201HtmlImportFile'))return;
+    const html='<input type="file" id="v201HtmlImportFile" accept=".html,.htm,.json,.srerp" style="display:none">';
+    document.getElementById('sidebar')?.insertAdjacentHTML('beforeend',html);
+    document.getElementById('v201HtmlImportFile')?.addEventListener('change',v8ImportPortableFile);
     const card=document.getElementById('v20ExcelBackupCard');
     if(card&&!document.getElementById('v201HtmlBackupBoxes')){
       const badge=card.querySelector('.pill');if(badge){badge.className='v201-backup-badge';badge.innerHTML='<i class="bi bi-database-check"></i> Excel + HTML';}

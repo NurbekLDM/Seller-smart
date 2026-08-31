@@ -328,6 +328,66 @@ function patchFileUploadGuard(appHtml) {
 const fileGuard = patchFileUploadGuard(html);
 html = fileGuard.html;
 
+/* -------- backup / reset menu trim (owner request, 2026-08-31) ----------
+   The owner does not use the ERP's backup features and asked for their five
+   sidebar entries to go:
+     "To‘liq Excel backup (.xlsx)"   (base markup, relabelled by v20)
+     "Excel backupni tiklash"        (base markup, relabelled by v20)
+     "Parol bilan tizimni tozalash"  (base markup, relabelled by v19)
+     "To‘liq HTML backup"            (injected at runtime by v20.1)
+     "HTML backupni tiklash"         (injected at runtime by v20.1)
+   Both hidden <input type="file"> elements are deliberately KEPT: the base
+   ERP binds handleImportFile to #importFile with no null guard (it would
+   throw at boot without it), and the Sozlamalar screen's own Excel/HTML
+   cards still open both. Only the visible menu goes here — the cards and
+   the export/import/reset functions behind them are untouched.
+   Patched in the payload, so the embedded frame, the "open in a new
+   window" popup and public/erp.html all get it from one place. The v19/v20
+   relabellers that used to rename these links are all `if (found)` guarded,
+   so they simply no-op now. */
+
+const BACKUP_MENU_ANCHOR = `  <div class="nav-group" style="margin-top:10px; border-top:1px solid var(--border); padding-top:14px;">
+    <div class="nav-link-erp" onclick="exportAllData()"><i class="bi bi-file-earmark-excel"></i> Excel eksport (.xlsx)</div>
+    <div class="nav-link-erp" onclick="document.getElementById('importFile').click()"><i class="bi bi-upload"></i> Excel import</div>
+    <input type="file" id="importFile" accept=".xlsx,.xls,.csv" style="display:none">
+    <div class="nav-link-erp" onclick="v18ResetStoreData()"><i class="bi bi-eraser"></i> Yangi do‘kon holatiga tozalash</div>
+  </div>`;
+
+const BACKUP_MENU_TRIMMED = `  <!-- SR_BACKUP_MENU_TRIM (build-time patch — scripts/build.mjs): the
+       backup / import / reset sidebar group is removed. The hidden input
+       stays: the base ERP binds its change handler to it unguarded. -->
+  <input type="file" id="importFile" accept=".xlsx,.xls,.csv" style="display:none">`;
+
+const HTML_BACKUP_MENU_ANCHOR = `  function v201InstallUi(){
+    if(document.getElementById('v201HtmlExportAction'))return;
+    const groups=[...document.querySelectorAll('#sidebar .nav-group')];
+    const actionGroup=groups.find(g=>g.querySelector('[onclick="exportAllData()"]'))||groups[groups.length-1];
+    if(actionGroup){
+      const reset=[...actionGroup.querySelectorAll('.nav-link-erp')].find(el=>String(el.getAttribute('onclick')||'').includes('v18ResetStoreData'));
+      const html=\`<div class="nav-link-erp" id="v201HtmlExportAction" onclick="v8ExportPortableHtml()"><i class="bi bi-filetype-html"></i> To‘liq HTML backup</div><div class="nav-link-erp" id="v201HtmlImportAction" onclick="document.getElementById('v201HtmlImportFile').click()"><i class="bi bi-file-earmark-arrow-up"></i> HTML backupni tiklash</div><input type="file" id="v201HtmlImportFile" accept=".html,.htm,.json,.srerp" style="display:none">\`;
+      if(reset)reset.insertAdjacentHTML('beforebegin',html);else actionGroup.insertAdjacentHTML('beforeend',html);
+      document.getElementById('v201HtmlImportFile')?.addEventListener('change',v8ImportPortableFile);
+    }`;
+
+const HTML_BACKUP_MENU_TRIMMED = `  function v201InstallUi(){
+    /* SR_BACKUP_MENU_TRIM (build-time patch — scripts/build.mjs): the two
+       sidebar entries are gone; only the hidden file input is installed, so
+       the Sozlamalar card's restore button still has something to open. The
+       install guard keys off that input instead of the removed link. */
+    if(document.getElementById('v201HtmlImportFile'))return;
+    const html='<input type="file" id="v201HtmlImportFile" accept=".html,.htm,.json,.srerp" style="display:none">';
+    document.getElementById('sidebar')?.insertAdjacentHTML('beforeend',html);
+    document.getElementById('v201HtmlImportFile')?.addEventListener('change',v8ImportPortableFile);`;
+
+function patchBackupMenu(appHtml) {
+  return patchB64Const(appHtml, 'SMART_RETAIL_ERP_B64', (erp) => {
+    let body = mustReplaceOnce(erp, BACKUP_MENU_ANCHOR, BACKUP_MENU_TRIMMED, 'erp backup menu group');
+    return mustReplaceOnce(body, HTML_BACKUP_MENU_ANCHOR, HTML_BACKUP_MENU_TRIMMED, 'erp html-backup menu');
+  });
+}
+
+html = patchBackupMenu(html);
+
 writeFileSync(outputFile, html);
 
 // ---- standalone ERP page (public/erp.html) for ERP staff accounts ------
