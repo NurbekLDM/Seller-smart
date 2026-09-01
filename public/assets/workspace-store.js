@@ -989,13 +989,29 @@
         seen.delete(key);
         queue(key, 'delete');
       },
+      /* Clears this DEVICE's view. It does not delete the workspace.
+
+         It used to queue a delete for every key, which is what
+         localStorage.clear() means when localStorage is the database — and
+         it reached straight into the write queue instead of going through
+         queue(), so the guard that stops writes after suspend() did not
+         apply to it. Measured during the logout test: 38 deletes queued
+         after the store had been told to stop, written to the outbox that
+         had just been cleared, ready to be replayed at the next sign-in.
+
+         Nothing in this application calls it. Every wipe that is meant —
+         logout, an account switch, the foreign-project fence — works on
+         the device through the store's raw handle, because erasing this
+         terminal has never meant erasing the shop. This now matches: the
+         local view goes, the workspace stays, and a shop is deleted only
+         by something that says so.
+
+         Non-synced keys (the auth token included) belong to the real
+         store and are left alone. */
       clear: function () {
-        memory.forEach(function (_value, key) { dirty.set(key, 'delete'); });
         memory.clear();
-        persistOutbox();
-        if (online) flush();
-        // Non-synced keys (auth token included) are the real store's
-        // business; clear() there is never what the ERP means.
+        seen.clear();
+        base.clear();
       },
       key: function (index) {
         var position = Number(index) || 0;
