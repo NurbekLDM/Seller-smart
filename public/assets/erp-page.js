@@ -27,9 +27,19 @@
     try { return new URL(config.supabaseUrl).hostname.split('.')[0] || ''; } catch (_) { return ''; }
   })();
   var ANALYTICS_KEY = 'srerp_analytics_parent_state';
-  /* The warehouse cell map. Measured on the live workspace it is 1 548 KB
-     of the till's 1 614 KB fetch — 96% of the wait, for a screen most
-     cashiers never open. Loaded after the ERP is on screen instead. */
+  /* The warehouse cell map: 1 548 KB of the till's 1 614 KB fetch, so
+     deferring it looked like nearly all of the boot wait for free.
+
+     It is NOT deferred, because the ERP writes it during boot. Measured on
+     the preview: with the map deferred, the store refused twenty-odd
+     writes to it in the first seconds — the ERP had read nothing and was
+     about to persist an empty array over 6 249 rows, exactly the way this
+     shop was destroyed the first time. The guard held, but a boot that
+     depends on a guard firing twenty times is not a boot.
+
+     Making this cheap needs the cell map to stop being one row: a real
+     table, read by the screens that use it. That is a change to the WMS
+     code, not a flag. */
   var CELLS_KEY = 'srerp_cells';
   // How long logout waits for the final sync push before giving up on it.
   var LOGOUT_FLUSH_MS = 8000;
@@ -763,6 +773,7 @@
   function runDeferredScripts() {
     var blocks = document.querySelectorAll('script[type="text/sr-deferred"]');
     if (!blocks.length) return 0;
+    var failures = [];
     for (var index = 0; index < blocks.length; index += 1) {
       var inert = blocks[index];
       var live = document.createElement('script');
@@ -771,8 +782,25 @@
         if (attribute.name.toLowerCase() !== 'type') live.setAttribute(attribute.name, attribute.value);
       }
       live.text = inert.textContent;
-      // Replacing the node executes it synchronously, in order.
-      inert.parentNode.replaceChild(live, inert);
+      /* Replacing the node executes it synchronously, in order.
+
+         Wrapped because these blocks used to run during parsing, where the
+         browser isolates them: one script throwing never stopped the next.
+         Running them from a loop removes that isolation, so without this a
+         single failure would leave the rest of the ERP inert — a blank
+         till from one bad module. Report which one and carry on. */
+      try {
+        inert.parentNode.replaceChild(live, inert);
+      } catch (error) {
+        failures.push({ index: index, id: inert.id || '(no id)', bytes: (inert.textContent || '').length,
+                        error: String(error && error.message || error) });
+        // Take the inert node out anyway so it cannot be run twice.
+        try { inert.parentNode.removeChild(inert); } catch (_) { /* ignore */ }
+      }
+    }
+    if (failures.length) {
+      console.error('ERP modules that failed to run (' + failures.length + ' of '
+        + blocks.length + '):', failures);
     }
     /* Those blocks register ~53 DOMContentLoaded listeners and several
        load listeners. Both events fired long ago, while the blocks were
@@ -803,7 +831,7 @@
           // rows should cost one re-render, not one per row.
           window.clearTimeout(rerenderTimer);
           rerenderTimer = window.setTimeout(rerenderErp, 150);
-        }, { exclude: [ANALYTICS_KEY], defer: [CELLS_KEY] });
+        }, { exclude: [ANALYTICS_KEY] });
       })
       .then(function (count) {
         /* Only now is it safe to let the ERP run: every key it is about to
