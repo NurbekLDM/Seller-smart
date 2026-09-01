@@ -5509,8 +5509,9 @@ const AUTH_V12_VIEWS = [
   {id:'finance',label:'Finance',desc:'Kirim, chiqim va foyda'},
   {id:'accounting',label:'Buxgalteriya',desc:'Soliq va oylik xarajatlar'},
   {id:'employees',label:'Xodimlar',desc:'Reyting va audit ko‘rinishi'},
-  {id:'ai',label:'AI Analytics',desc:'Prognoz va tavsiyalar'},
-  {id:'settings',label:'Sozlamalar',desc:'Ombor, kategoriya va tizim sozlamalari'}
+  {id:'ai',label:'AI Analytics',desc:'Prognoz va tavsiyalar'}
+  /* "Sozlamalar" is intentionally not offered here: the section stays admin-only,
+     so it must not appear in the per-employee permission checklist. */
 ];
 
 if (typeof AUTH_V6_ROLES !== 'undefined') {
