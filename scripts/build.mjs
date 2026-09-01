@@ -546,6 +546,20 @@ function deferInlineScripts(html, startIndex) {
     output += html.slice(cursor, open);
     if (/\bsrc=/i.test(tag)) {
       output += tag; // external libraries still load during parsing
+    } else if (/id="crm21ServerSync"/i.test(tag)) {
+      /* The ERP's own server sync, from the VPS era. It is a second sync
+         engine: it reads every srerp_* key, pushes them to /api/v1 (long
+         gone - it 404s on every page load) and, on a pull, writes and
+         REMOVES keys through localStorage. Under the store that means
+         writing and deleting straight in the database.
+
+         It was inert by accident until today - the build corrupted it, so
+         it never parsed. Fixing that woke it up. Nothing depends on it:
+         crm21Refresh belongs to the CRM module, and this block exports
+         only window.smartRetailServerSync. Marked with a type nothing
+         runs, rather than deleted, so it is one word away from coming
+         back if it is ever wanted. */
+      output += tag.replace(/^<script/i, '<script type="text/sr-disabled"');
     } else {
       output += tag.replace(/^<script/i, '<script type="text/sr-deferred"');
       deferred += 1;

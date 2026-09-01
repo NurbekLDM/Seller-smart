@@ -92,16 +92,32 @@
   var store = window.smartRetailWorkspaceStore || null;
   var STORE_MODE = !!(store && store.enabled);
 
-  /* The platform hosts the ERP in a srcdoc iframe, and that iframe is a
-     SEPARATE realm: replacing window.localStorage here does nothing to it,
-     so the frame would read and write the real browser store and never
-     reach the database at all. Prepending this points the frame's
-     localStorage at THIS page's shim, so the frame shares the already
-     hydrated memory and the same write queue. */
-  var FRAME_BOOTSTRAP = '<script id="srStoreFrameBootstrap">(function(){try{'
-    + 'var s=parent.smartRetailWorkspaceStore;if(!s||!s.shim)return;var m=s.shim();'
-    + 'Object.defineProperty(window,"localStorage",{configurable:true,get:function(){return m;}});'
-    + '}catch(e){}})();<' + '/script>';
+  /* The ERP document is opened two ways from this page: in the srcdoc
+     iframe, and in its own window from a blob URL ("Yangi oynada ochish").
+     Both are separate realms that must be pointed at this page's shim,
+     and they reach it differently — an iframe through `parent`, a popup
+     through `opener`. Looking only at `parent` left the popup with the
+     real, empty browser store: the workspace lives in memory now, so the
+     window opened with no data in it at all.
+
+     If neither is reachable the ERP would boot against an empty store and
+     look like an empty shop, so say what happened instead. */
+  var FRAME_BOOTSTRAP = '<script id="srStoreFrameBootstrap">(function(){'
+    + 'function host(){'
+    + 'try{if(window.parent&&window.parent!==window&&window.parent.smartRetailWorkspaceStore)return window.parent;}catch(e){}'
+    + 'try{if(window.opener&&window.opener.smartRetailWorkspaceStore)return window.opener;}catch(e){}'
+    + 'return null;}'
+    + 'var h=host();'
+    + 'if(h){try{var m=h.smartRetailWorkspaceStore.shim();'
+    + 'Object.defineProperty(window,"localStorage",{configurable:true,get:function(){return m;}});return;}catch(e){}}'
+    + 'function warn(){try{var d=document.createElement("div");'
+    + 'd.setAttribute("style","position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;'
+    + 'background:#07111f;color:#dbe6f7;font:600 14px -apple-system,sans-serif;text-align:center;padding:24px");'
+    + 'd.innerHTML="<div style=\'max-width:340px;line-height:1.6\'>Ma\u2019lumot manbai topilmadi.<br>'
+    + 'Bu oynani asosiy ERP oynasidan oching va uni yopmang.</div>";'
+    + 'document.documentElement.appendChild(d);}catch(e){}}'
+    + 'if(document.body)warn();else document.addEventListener("DOMContentLoaded",warn,{once:true});'
+    + '})();<' + '/script>';
 
   function bootstrapFrameHtml(html) {
     if (typeof html !== 'string' || html.indexOf('srStoreFrameBootstrap') !== -1) return html;
