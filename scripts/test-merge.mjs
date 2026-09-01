@@ -48,7 +48,7 @@ function loadStore() {
   return win.smartRetailWorkspaceStore;
 }
 
-const { threeWayMerge } = loadStore();
+const { threeWayMerge, listDiff } = loadStore();
 let failures = 0;
 
 function check(name, actual, expected) {
@@ -155,5 +155,53 @@ console.log('workspace store — conflict merge');
     [{ id: 'B' }, { id: 'A' }]);
 }
 
-console.log(failures ? `\n${failures} test(s) failed` : '\nall merge tests passed');
+
+/* What a large list write actually sends. Getting this wrong does not
+   corrupt one field — it drops warehouse cells. */
+console.log('\nworkspace store — list diff');
+
+{
+  const base = json([{ id: 'A', qty: 1 }, { id: 'B', qty: 2 }]);
+  const next = json([{ id: 'A', qty: 1 }, { id: 'B', qty: 9 }]);
+  check('one element edited — only that element is sent',
+    listDiff(base, next), { changed: [{ id: 'B', qty: 9 }], removed: [] });
+}
+
+{
+  const base = json([{ id: 'A' }]);
+  const next = json([{ id: 'A' }, { id: 'B' }]);
+  check('one element added', listDiff(base, next), { changed: [{ id: 'B' }], removed: [] });
+}
+
+{
+  const base = json([{ id: 'A' }, { id: 'B' }]);
+  const next = json([{ id: 'A' }]);
+  check('one element removed', listDiff(base, next), { changed: [], removed: ['B'] });
+}
+
+{
+  const base = json([{ id: 'A', v: 1 }, { id: 'B' }, { id: 'C' }]);
+  const next = json([{ id: 'A', v: 2 }, { id: 'C' }, { id: 'D' }]);
+  check('mixed edit, remove and add',
+    listDiff(base, next), { changed: [{ id: 'A', v: 2 }, { id: 'D' }], removed: ['B'] });
+}
+
+{
+  const unchanged = json([{ id: 'A', v: 1 }]);
+  check('nothing changed — nothing sent', listDiff(unchanged, unchanged), { changed: [], removed: [] });
+}
+
+/* Without a stable id there is no way to say which element moved, so the
+   caller must fall back to sending the whole value. */
+{
+  check('elements without ids — refuses to diff', listDiff(json(['a']), json(['a', 'b'])), null);
+}
+{
+  check('not a list — refuses to diff', listDiff(json({ a: 1 }), json({ a: 2 })), null);
+}
+{
+  check('unparsable — refuses to diff', listDiff('not json', json([{ id: 'A' }])), null);
+}
+
+console.log(failures ? `\n${failures} test(s) failed` : '\nall tests passed');
 process.exit(failures ? 1 : 0);

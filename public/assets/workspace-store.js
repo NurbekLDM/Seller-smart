@@ -69,6 +69,9 @@
   })();
   var OUTBOX_KEY = OUTBOX_PREFIX + '-' + TAB_ID;
   var WRITE_DEBOUNCE_MS = 400;
+  /* Below this a whole value is small enough that diffing it is not worth
+     the extra machinery; above it, one edit was costing megabytes. */
+  var DELTA_MIN_BYTES = 65536;
   /* How often to check the workspace for changes this terminal has not
      been told about. See reconcile(). */
   var RECONCILE_MS = 45000;
@@ -146,6 +149,10 @@
   /* Whether this database has the revisions migration. Flipped off by the
      first flush that finds save_workspace_kv missing. */
   var conditionalWrites = true;
+  /* Whether this database has save_workspace_kv_delta. Same fallback rule
+     as conditionalWrites: a missing migration must never stop a till from
+     saving, only make it send more bytes. */
+  var deltaWrites = true;
 
   // Remote DELETEs arriving in a burst: a bulk server-side operation, not
   // the app deleting keys. See the realtime handler.
@@ -298,6 +305,36 @@
     return out;
   }
 
+  /* What changed between two versions of the same list.
+
+     The ERP has no concept of writing one row: changing a single warehouse
+     cell rewrites the whole srerp_cells array, and this store faithfully
+     uploaded all 1.27 MB of it. A worker placing fifty items sent about
+     63 MB. Sending what actually changed turns that into a few hundred
+     bytes; see save_workspace_kv_delta().
+
+     Returns null whenever a diff cannot be trusted — not both lists, or
+     elements without a stable id — and the caller sends the whole value,
+     which is what it always did. */
+  function listDiff(baseText, nextText) {
+    var was = parse(baseText);
+    var now = parse(nextText);
+    if (!was.ok || !now.ok) return null;
+    if (!Array.isArray(was.value) || !Array.isArray(now.value)) return null;
+    var before = indexById(was.value);
+    var after = indexById(now.value);
+    if (!before || !after) return null;
+
+    var changed = [];
+    after.forEach(function (item, id) {
+      var previous = before.get(id);
+      if (!previous || !same(previous, item)) changed.push(item);
+    });
+    var removed = [];
+    before.forEach(function (_item, id) { if (!after.has(id)) removed.push(id); });
+    return { changed: changed, removed: removed };
+  }
+
   function threeWayMerge(baseText, mineText, theirsText) {
     var b = parse(typeof baseText === 'string' ? baseText : 'null');
     var m = parse(mineText);
@@ -344,13 +381,52 @@
            built on. The server refuses any whose base has moved and hands
            back what is actually stored, so a second terminal's change is
            merged rather than overwritten. */
-        var payload = upserts.map(function (row) {
+        var payload = [];
+        var deltaPayload = [];
+        upserts.forEach(function (row) {
           var known = base.get(row.key);
-          return { key: row.key, value: row.value, expected: known ? known.revision : null };
+          var expected = known ? known.revision : null;
+          var diff = null;
+          if (known && expected !== null && String(row.value).length >= DELTA_MIN_BYTES) {
+            diff = listDiff(known.value, row.value);
+            /* A diff that is not much smaller than the value buys nothing
+               and costs a second code path, so fall back. */
+            if (diff && JSON.stringify(diff).length > String(row.value).length / 2) diff = null;
+          }
+          if (diff) deltaPayload.push({ key: row.key, expected: expected, changed: diff.changed, removed: diff.removed });
+          else payload.push({ key: row.key, value: row.value, expected: expected });
         });
+
         var written = conditionalWrites
           ? await client.rpc('save_workspace_kv', { entries: payload })
           : { data: null, error: { code: 'PGRST202' } };
+
+        /* Deltas go to their own function. If that one is missing — its
+           migration not applied yet — resend those keys whole rather than
+           losing them, and stop trying. */
+        if (conditionalWrites && deltaPayload.length) {
+          var delta = deltaWrites
+            ? await client.rpc('save_workspace_kv_delta', { entries: deltaPayload })
+            : { data: null, error: { code: 'PGRST202' } };
+          if (delta.error && (delta.error.code === 'PGRST202'
+              || /Could not find the function/i.test(delta.error.message || ''))) {
+            if (deltaWrites) {
+              deltaWrites = false;
+              console.warn('Workspace store: save_workspace_kv_delta is missing; '
+                + 'sending whole values until its migration is applied.');
+            }
+            deltaPayload.forEach(function (entry) {
+              payload.push({ key: entry.key, value: memory.get(entry.key), expected: entry.expected });
+            });
+            var resent = await client.rpc('save_workspace_kv', { entries: payload });
+            if (resent.error) throw decorate(resent.error);
+            written = resent;
+          } else if (delta.error) {
+            throw decorate(delta.error);
+          } else if (!written.error) {
+            written = { data: (written.data || []).concat(delta.data || []), error: null };
+          }
+        }
 
         /* The revisions migration has not been applied to this database
            yet. Rather than leave a till unable to save anything, fall back
@@ -912,6 +988,9 @@
        moment, which is not something to verify by trying it on a shop.
        See scripts/test-merge.mjs. Pure: no state, no I/O. */
     threeWayMerge: threeWayMerge,
+    /* Exposed alongside the merge: what a write actually sends for a large
+       list is worth being able to check directly. */
+    listDiff: listDiff,
     /* Resolves once the workspace has been fetched at least once. */
     ready: function () { return readyPromise; },
     synced: synced,
