@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "check": "node --check scripts/build.mjs && node --check middleware.js && node --check public/assets/auth-guard.js && node --check public/assets/supabase-sync.js && node --check public/assets/app-config.js && node --check public/assets/analytics-windows.js && node --check public/assets/proai-i18n.js && node --check public/assets/erp-page.js && node --check public/assets/staff-bridge.js && node --check public/assets/version-check.js && node --check api/admin/users.js && node --check api/staff.js && node --check scripts/check-csp-origins.mjs && node scripts/check-csp-origins.mjs"
+    "check": "node --check scripts/build.mjs && node --check middleware.js && node --check public/assets/auth-guard.js && node --check public/assets/supabase-sync.js && node --check public/assets/workspace-store.js && node --check public/assets/app-config.js && node --check public/assets/analytics-windows.js && node --check public/assets/proai-i18n.js && node --check public/assets/erp-page.js && node --check public/assets/staff-bridge.js && node --check public/assets/version-check.js && node --check api/admin/users.js && node --check api/staff.js && node --check scripts/check-csp-origins.mjs && node scripts/check-csp-origins.mjs"
   },
   "license": "UNLICENSED"
 }

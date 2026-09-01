@@ -460,6 +460,9 @@ const erpBlock = '\n<!-- SR_ERP_PAGE_BEGIN -->\n' +
   '<script src="assets/app-config.js"></script>\n' +
   '<script src="assets/vendor/supabase.js"></script>\n' +
   '<script src="assets/staff-bridge.js"></script>\n' +
+  // Must precede erp-page.js: that file installs the store's localStorage
+  // shim during its own parse, before the ERP's scripts read any storage.
+  '<script src="assets/workspace-store.js"></script>\n' +
   '<script src="assets/erp-page.js"></script>\n' +
   '<script src="assets/version-check.js"></script>\n' +
   '<style id="srBootAuthHide">body.auth-locked{visibility:hidden!important}</style>\n' +

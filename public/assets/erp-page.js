@@ -31,6 +31,31 @@
   var LOGOUT_FLUSH_MS = 8000;
   var signingOut = false;
 
+  /* Rollout switch for the per-key Postgres store (workspace-store.js,
+     supabase/2026-09-01-workspace-kv.sql). While it is off this file
+     behaves exactly as before, snapshot engine and all.
+
+     `?kv=1` turns it on for this terminal and remembers the choice;
+     `?kv=0` turns it back off. Read here, at parse time, because the
+     store is about to replace window.localStorage with a shim and this
+     answer must come from the real one. */
+  var store = window.smartRetailWorkspaceStore || null;
+  var KV_MODE = (function () {
+    try {
+      var chosen = /[?&]kv=([01])/.exec(window.location.search);
+      if (chosen) {
+        localStorage.setItem('sr-kv-mode', chosen[1]);
+        return chosen[1] === '1';
+      }
+      return localStorage.getItem('sr-kv-mode') === '1';
+    } catch (_) { return false; }
+  })();
+  if (KV_MODE && !store) {
+    // Fail closed onto the old path rather than running with no data layer.
+    console.error('Workspace store script is missing — falling back to the snapshot engine.');
+    KV_MODE = false;
+  }
+
   function setAuthCookie(token, maxAgeSeconds) {
     var parts = [
       'sr-access-token=' + encodeURIComponent(token || ''),
@@ -76,14 +101,30 @@
     return typeof key === 'string' && /^(srerp_|uzum[-_])/.test(key);
   }
 
+  /* Clear this TERMINAL — never delete the workspace.
+
+     While the data lived in the browser those were the same operation, so
+     logout and the account-switch guard simply removed the keys. Under the
+     Postgres store they are opposites: window.localStorage is a shim whose
+     removeItem queues a DELETE against the shared workspace row, so the
+     plain loop below would have a cashier erase the whole shop by logging
+     out. Everything here therefore goes through the store's real-storage
+     handle, and the workspace is dropped from memory with forget(), which
+     touches no rows. */
   function wipeLocalWorkspace() {
     try {
+      var device = store && KV_MODE ? store.raw : {
+        removeItem: function (key) { localStorage.removeItem(key); },
+        key: function (index) { return localStorage.key(index); },
+        count: function () { return localStorage.length; }
+      };
       var doomed = [];
-      for (var index = 0; index < localStorage.length; index += 1) {
-        var key = localStorage.key(index);
+      for (var index = 0; index < device.count(); index += 1) {
+        var key = device.key(index);
         if (isWorkspaceKey(key)) doomed.push(key);
       }
-      doomed.forEach(function (key) { localStorage.removeItem(key); });
+      doomed.forEach(function (key) { device.removeItem(key); });
+      if (store && KV_MODE) store.forget();
       var doomedSession = [];
       for (var position = 0; position < sessionStorage.length; position += 1) {
         var sessionKey = sessionStorage.key(position);
@@ -250,6 +291,12 @@
     } catch (_) { /* ignore */ }
   }
 
+  /* The shim has to be in place before the ERP's own scripts parse — they
+     read storage immediately — but AFTER the account-switch wipe above,
+     which is about this device and must never reach the database. It
+     starts empty; start() below fills it, and nothing is sent until then. */
+  if (KV_MODE) store.install();
+
   var cachedProfile = null;
   try {
     cachedProfile = JSON.parse(localStorage.getItem(ERP_PROFILE_KEY) || 'null');
@@ -264,7 +311,9 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     hookLogout();
-    hookSync();
+    // The snapshot engine and the store must never both be live: they
+    // would write the same data to two different places.
+    if (!KV_MODE) hookSync();
     if (cachedProfile && cachedProfile.role === 'OWNER') {
       window.setTimeout(function () {
         try { hookEmployeeManagement(); } catch (error) { console.warn('Employee management unavailable:', error.message); }
@@ -299,7 +348,10 @@
       sessionStorage.removeItem('srerp_analytics_erp_access_v22');
     } catch (_) { /* ignore */ }
     var pendingFlush = Promise.resolve();
-    try { if (syncActive) pendingFlush = flush().catch(function () {}); } catch (_) { /* ignore */ }
+    try {
+      if (KV_MODE) pendingFlush = Promise.resolve(store.flush()).catch(function () {});
+      else if (syncActive) pendingFlush = flush().catch(function () {});
+    } catch (_) { /* ignore */ }
     var cap = new Promise(function (resolve) { window.setTimeout(resolve, LOGOUT_FLUSH_MS); });
     Promise.race([pendingFlush, cap]).then(function () {
       // Revoke server-side while the session is still readable, then purge.
@@ -309,13 +361,15 @@
          otherwise be announced as a change and re-arm the unsent-work
          marker this logout just cleared. */
       syncActive = false;
+      if (KV_MODE) store.suspend();
       purgeSupabaseStorage();
       /* Auth material is always gone by now. The shift's data may only be
          erased once the database actually has it — wiping a till whose
          last push never landed destroys those sales with no copy left.
          What stays behind is still isolated: a different account signing
          in on this terminal wipes it, and the same account resends it. */
-      if (pending) {
+      var unsent = KV_MODE ? store.status().unsent > 0 : pending;
+      if (unsent) {
         window.location.replace('/login.html?unsaved=1');
         return;
       }
@@ -660,6 +714,46 @@
     window.setInterval(pullRemote, REMOTE_POLL_MS);
   }
 
+  /* --------------------- Postgres-backed store boot --------------------- */
+
+  var rerenderTimer = null;
+
+  function rerenderErp() {
+    try { if (typeof renderAll === 'function') renderAll(); } catch (_) { /* best effort */ }
+    try { if (typeof crm21Refresh === 'function') crm21Refresh(); } catch (_) { /* ignore */ }
+  }
+
+  /* Deliberately gated on domReady, for the same reason the snapshot
+     restore was: the ERP's inline first-run initialisers must have run to
+     completion before the real data lands, or they reset it right after.
+     Everything they wrote in the meantime is discarded by hydrate(), which
+     is why nothing is sent to the database before this point. */
+  function startWorkspaceStore(profile, session, attempt) {
+    var workspace = profile.workspace_owner || session.user.id;
+    store.subscribe(function (state, label) { announce(state, label); });
+    return domReady
+      .then(function () {
+        return store.start(client, workspace, function () {
+          // Another terminal changed a key. Coalesce: a burst of remote
+          // rows should cost one re-render, not one per row.
+          window.clearTimeout(rerenderTimer);
+          rerenderTimer = window.setTimeout(rerenderErp, 150);
+        });
+      })
+      .then(function (count) {
+        rerenderErp();
+        tryUnlock();
+        announce('online', 'Bazaga ulangan \u00b7 ' + count + ' kalit');
+      })
+      .catch(function (error) {
+        console.warn('Workspace store unavailable:', error.message);
+        announce('error', 'Bazadan yuklab bo\u2018lmadi \u2014 qayta urinilmoqda');
+        var wait = Math.min(30000, 3000 * Math.pow(2, Math.min(attempt || 0, 4)));
+        return new Promise(function (resolve) { window.setTimeout(resolve, wait); })
+          .then(function () { return startWorkspaceStore(profile, session, (attempt || 0) + 1); });
+      });
+  }
+
   /* ------------------------- session readiness -------------------------- */
 
   window.smartRetailAuthReady = client.auth.getSession().then(function (result) {
@@ -786,6 +880,7 @@
               .then(function () { return initialPull(attempt + 1); });
           });
         }
+        if (KV_MODE) return startWorkspaceStore(profile, session).then(function () { return session; });
         return initialPull(0).then(function () { return session; });
       });
   });
