@@ -43,7 +43,7 @@
      scripts/build.mjs greps this very line to decide whether to mark the
      ERP's inline scripts inert. A build that defers those scripts while
      the runtime declines to execute them produces a blank till. */
-  var STORE_ENABLED = false;
+  var STORE_ENABLED = true;
 
   var TABLE = 'workspace_kv';
   var OUTBOX_KEY = 'sr-kv-outbox';
