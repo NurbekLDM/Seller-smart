@@ -487,6 +487,15 @@
        happens with real unsent work in the queue, which must survive. */
     if (!hydrated) dirty.clear();
 
+    /* A re-read fetches everything EXCEPT the deferred keys, so clearing
+       outright would drop the cell map on every resync and leave the
+       warehouse screens blank until something happened to fetch it again.
+       Carry the last known values across; loadDeferred() refreshes them. */
+    var carried = new Map();
+    deferred.forEach(function (key) {
+      if (memory.has(key)) carried.set(key, { value: memory.get(key), was: base.get(key) });
+    });
+
     memory.clear();
     base.clear();
     rows.forEach(function (row) {
@@ -517,6 +526,11 @@
       seen = new Set(memory.keys());
     }
 
+    carried.forEach(function (entry, key) {
+      memory.set(key, entry.value);
+      if (entry.was) base.set(key, entry.was);
+    });
+
     /* Find out which deferred keys the workspace actually has — the key
        names only, a few bytes. Registering them in `seen` is what makes
        setItem() refuse to write them while their value is still in
@@ -530,6 +544,9 @@
         .in('key', deferred);
       if (!names.error) {
         (names.data || []).forEach(function (row) {
+          // Carried over above: the value is present, so it is not pending
+          // and the guard must not treat it as a stale view.
+          if (memory.has(row.key)) { seen.add(row.key); return; }
           pendingDeferred.add(row.key);
           seen.add(row.key);
         });
@@ -552,6 +569,9 @@
       .then(function () {
         announce('online', 'Bazadan qayta yuklandi');
         if (typeof onRemote === 'function') onRemote(null);
+        // hydrate() skips the deferred keys by design; nothing else would
+        // refresh them after a resync.
+        return loadDeferred();
       })
       .catch(function (error) {
         console.warn('Workspace store: resync failed:', error.message);
