@@ -115,6 +115,19 @@
   var channel = null;
   var excluded = [];   // keys this page never needs and must not download
 
+  /* Keys this page DOES need but not at boot. Measured against the live
+     workspace, srerp_cells is 1 548 KB of the till's 1 614 KB: fetching it
+     up front is 96% of the wait for a screen most cashiers never open.
+
+     A deferred key is not the same as an absent one. Until it arrives the
+     store holds no value for it, and if the ERP were allowed to write in
+     that state it would persist an empty array over the real rows — the
+     first way this shop was destroyed. So a deferred key is registered in
+     `seen` the moment the store learns it exists, which makes the guard in
+     setItem() refuse exactly those writes until the value is really here. */
+  var deferred = [];
+  var pendingDeferred = new Set();
+
   /* Every synced key this session has ever held. The gap between `seen`
      and `memory` is what makes a write dangerous — see the guard in
      setItem(). A key leaves `seen` only when this terminal deletes it on
@@ -450,8 +463,10 @@
       /* Excluded server-side, not filtered after the fact: the whole point
          is not to transfer the bytes. The till excludes the owner's
          analytics state this way — 2.37 MB of the workspace's 3.7 MB that
-         no ERP screen ever reads. */
+         no ERP screen ever reads — and defers the cell map, which is
+         another 1.5 MB. */
       excluded.forEach(function (key) { query = query.neq('key', key); });
+      deferred.forEach(function (key) { query = query.neq('key', key); });
       var page = await query
         .range(from, from + PAGE - 1);
       if (page.error) throw decorate(page.error);
@@ -501,6 +516,25 @@
     } else {
       seen = new Set(memory.keys());
     }
+
+    /* Find out which deferred keys the workspace actually has — the key
+       names only, a few bytes. Registering them in `seen` is what makes
+       setItem() refuse to write them while their value is still in
+       flight; without this the ERP would read nothing and persist an
+       empty array over the real rows. */
+    pendingDeferred.clear();
+    if (deferred.length) {
+      var names = await client.from(TABLE)
+        .select('key')
+        .eq('workspace_id', workspaceId)
+        .in('key', deferred);
+      if (!names.error) {
+        (names.data || []).forEach(function (row) {
+          pendingDeferred.add(row.key);
+          seen.add(row.key);
+        });
+      }
+    }
     hydrated = true;
     announceReady();
     return memory.size;
@@ -523,6 +557,39 @@
         console.warn('Workspace store: resync failed:', error.message);
       })
       .finally(function () { resyncing = false; });
+  }
+
+  /* Fetch what boot deliberately skipped. Called after the caller has the
+     app on screen, so the cost lands on a page the user can already read
+     rather than on a spinner. Screens that need these keys show nothing
+     until it resolves — and, because of the guard, cannot save over them
+     in the meantime. */
+  async function loadDeferred() {
+    if (!pendingDeferred.size || !online) return 0;
+    var wanted = Array.from(pendingDeferred);
+    try {
+      var result = await client.from(TABLE)
+        .select('key, value, revision')
+        .eq('workspace_id', workspaceId)
+        .in('key', wanted);
+      if (result.error) throw decorate(result.error);
+      (result.data || []).forEach(function (row) {
+        var text = typeof row.value === 'string' ? row.value : JSON.stringify(row.value);
+        // A write that landed while this was in flight is newer than the
+        // database row it raced; never overwrite it.
+        if (dirty.has(row.key)) { pendingDeferred.delete(row.key); return; }
+        memory.set(row.key, text);
+        base.set(row.key, { value: text, revision: Number(row.revision) || 1 });
+        seen.add(row.key);
+        pendingDeferred.delete(row.key);
+      });
+      if (typeof onRemote === 'function') onRemote(null);
+      return result.data ? result.data.length : 0;
+    } catch (error) {
+      console.warn('Workspace store: deferred keys unavailable:', error.message);
+      window.setTimeout(loadDeferred, 4000);
+      return 0;
+    }
   }
 
   /* ------------------------------ realtime ------------------------------ */
@@ -715,6 +782,7 @@
       client = supabaseClient;
       workspaceId = workspace;
       excluded = (options && Array.isArray(options.exclude)) ? options.exclude.slice() : [];
+      deferred = (options && Array.isArray(options.defer)) ? options.defer.slice() : [];
       onRemote = onRemoteChange;
       install();
       announce('syncing', 'Bazadan yuklanmoqda...');
@@ -728,6 +796,12 @@
 
     flush: flush,
     hydrate: hydrate,
+    /* Fetch the keys start() was told to defer. The caller decides when —
+       after the app is on screen, not before. */
+    loadDeferred: loadDeferred,
+    /* True while a deferred key is still on its way, so a screen that
+       needs it can wait rather than render an empty one. */
+    isPending: function (key) { return pendingDeferred.has(key); },
 
     /* Exposed so the merge can be exercised directly — it decides what
        happens to a sale when two tills write the same key at the same
@@ -781,6 +855,7 @@
       memory.clear();
       seen.clear();
       base.clear();
+      pendingDeferred.clear();
       hydrated = false;
       rawRemove(OUTBOX_KEY);
       try { if (channel) client.removeChannel(channel); } catch (_) { /* ignore */ }

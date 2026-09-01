@@ -27,6 +27,10 @@
     try { return new URL(config.supabaseUrl).hostname.split('.')[0] || ''; } catch (_) { return ''; }
   })();
   var ANALYTICS_KEY = 'srerp_analytics_parent_state';
+  /* The warehouse cell map. Measured on the live workspace it is 1 548 KB
+     of the till's 1 614 KB fetch — 96% of the wait, for a screen most
+     cashiers never open. Loaded after the ERP is on screen instead. */
+  var CELLS_KEY = 'srerp_cells';
   // How long logout waits for the final sync push before giving up on it.
   var LOGOUT_FLUSH_MS = 8000;
   var signingOut = false;
@@ -722,6 +726,34 @@
 
   /* --------------------- Postgres-backed store boot --------------------- */
 
+  /* The till cannot open until the workspace has been fetched — that is
+     the deliberate trade for not keeping the shop in the browser. What it
+     must not do is leave a cashier watching a spinner with no idea whether
+     to wait or fetch the manager. Replace the boot splash with something
+     that says what is wrong and that it is still trying. */
+  function showBootProblem(attempt) {
+    try {
+      var splash = document.getElementById('srErpBootSplash');
+      if (!splash) return;
+      var offline = (typeof navigator !== 'undefined' && navigator.onLine === false);
+      splash.innerHTML =
+        '<div style="text-align:center;max-width:320px;color:#dbe6f7;'
+        + 'font:600 13px -apple-system,\'Segoe UI\',sans-serif;line-height:1.5">'
+        + '<div style="font-size:30px;margin-bottom:10px">' + (offline ? '\u26a0\ufe0f' : '\u23f3') + '</div>'
+        + (offline
+            ? 'Internet aloqasi yo\u2018q.<br>Kassa ma\u2019lumotlari bazada saqlanadi, '
+              + 'shuning uchun ulanmasdan ochib bo\u2018lmaydi.'
+            : 'Bazaga ulanib bo\u2018lmadi.')
+        + '<div style="margin-top:8px;color:#8ea0bd;font-weight:400">Qayta urinilmoqda\u2026 ('
+        + (attempt + 1) + ')</div>'
+        + '<button id="srErpRetry" style="margin-top:14px;padding:8px 16px;border:0;border-radius:9px;'
+        + 'background:linear-gradient(105deg,#6961fa,#3686ef);color:#fff;font-weight:700;'
+        + 'font-size:12px;cursor:pointer">Hozir qayta urinish</button></div>';
+      var retry = document.getElementById('srErpRetry');
+      if (retry) retry.onclick = function () { window.location.reload(); };
+    } catch (_) { /* the retry loop continues regardless */ }
+  }
+
   var rerenderTimer = null;
 
   /* Run the ERP's own scripts, which build.mjs marked inert so they could
@@ -771,11 +803,13 @@
           // rows should cost one re-render, not one per row.
           window.clearTimeout(rerenderTimer);
           rerenderTimer = window.setTimeout(rerenderErp, 150);
-        }, { exclude: [ANALYTICS_KEY] });
+        }, { exclude: [ANALYTICS_KEY], defer: [CELLS_KEY] });
       })
       .then(function (count) {
         /* Only now is it safe to let the ERP run: every key it is about to
-           read is already in the store. */
+           read is already in the store — bar the deliberately deferred cell
+           map, which the store refuses to let anything write until it
+           arrives. */
         var executed = runDeferredScripts();
         /* These wrap functions the ERP itself defines, so the earlier
            attempt at DOMContentLoaded found nothing to wrap. */
@@ -793,11 +827,17 @@
         rerenderErp();
         tryUnlock();
         announce('online', 'Bazaga ulangan \u00b7 ' + count + ' kalit');
+        /* The rest of the workspace, now that the user has something to
+           look at. Not awaited: the till is already usable without it. */
+        store.loadDeferred().then(function (loaded) {
+          if (loaded) rerenderErp();
+        });
         return executed;
       })
       .catch(function (error) {
         console.warn('Workspace store unavailable:', error.message);
         announce('error', 'Bazadan yuklab bo\u2018lmadi \u2014 qayta urinilmoqda');
+        showBootProblem(attempt || 0);
         var wait = Math.min(30000, 3000 * Math.pow(2, Math.min(attempt || 0, 4)));
         return new Promise(function (resolve) { window.setTimeout(resolve, wait); })
           .then(function () { return startWorkspaceStore(profile, session, (attempt || 0) + 1); });
