@@ -116,6 +116,24 @@
   var online = false;
   var flushing = false;
   var writeTimer = null;
+  /* Anything still queued gets another attempt on this interval, whatever
+     went wrong last time. Without it, work left over from a partial or
+     refused flush waits for the app to happen to write again. */
+  var FLUSH_RETRY_MS = 10000;
+  var retryPulse = null;
+
+  /* setTimeout leaves its handle behind after it fires, so a plain
+     `writeTimer = setTimeout(...)` makes `!writeTimer` false forever and
+     every "schedule one if none is pending" check silently does nothing.
+     Measured: after the database refused one write, the OTHER key in that
+     batch never went at all. */
+  function scheduleFlush(delayMs) {
+    window.clearTimeout(writeTimer);
+    writeTimer = window.setTimeout(function () {
+      writeTimer = null;
+      flush();
+    }, delayMs);
+  }
   var retryDelay = RETRY_BASE_MS;
   var subscribers = new Set();
   var channel = null;
@@ -367,8 +385,7 @@
     dirty.set(key, op);
     persistOutbox();
     if (!online) return;
-    window.clearTimeout(writeTimer);
-    writeTimer = window.setTimeout(flush, WRITE_DEBOUNCE_MS);
+    scheduleFlush(WRITE_DEBOUNCE_MS);
   }
 
   async function flush() {
@@ -498,8 +515,7 @@
           announce('syncing', 'Boshqa kassa bilan birlashtirilmoqda...');
           if (typeof onRemote === 'function') onRemote(null);
           // Retry promptly; a bounded backoff keeps a hot key from spinning.
-          window.clearTimeout(writeTimer);
-          writeTimer = window.setTimeout(flush, 250);
+          scheduleFlush(250);
         }
       }
       if (deletes.length) {
@@ -552,9 +568,7 @@
       }
     } finally {
       flushing = false;
-      if (online && dirty.size && !writeTimer) {
-        writeTimer = window.setTimeout(flush, WRITE_DEBOUNCE_MS);
-      }
+      if (online && dirty.size && !writeTimer) scheduleFlush(WRITE_DEBOUNCE_MS);
     }
   }
 
@@ -1053,6 +1067,10 @@
       listen(onRemoteChange);
       window.clearInterval(reconcileTimer);
       reconcileTimer = window.setInterval(reconcile, RECONCILE_MS);
+      window.clearInterval(retryPulse);
+      retryPulse = window.setInterval(function () {
+        if (online && dirty.size && !flushing) flush();
+      }, FLUSH_RETRY_MS);
       if (dirty.size) flush();
       announce('online', 'Bazaga ulangan');
       return count;
@@ -1127,6 +1145,8 @@
       writeTimer = null;
       window.clearInterval(reconcileTimer);
       reconcileTimer = null;
+      window.clearInterval(retryPulse);
+      retryPulse = null;
       dirty.clear();
       memory.clear();
       seen.clear();
