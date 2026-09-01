@@ -789,6 +789,26 @@
      now that every view it names exists. */
   function restoreGrantedModules(role, name, uid, modules) {
     try {
+      /* The filter above only keeps ids listed in AUTH_V12_VIEWS, and some
+         sections never register themselves there. Sotuvlar tarixi adds
+         itself to VIEW_META and to the POS role's views, but not to the v12
+         catalogue, so no amount of re-seeding could keep it: every read
+         stripped it again.
+
+         Anything the owner granted that really exists as a section in the
+         document is registered here, so a grant is never silently dropped
+         because a module forgot to introduce itself. */
+      if (typeof AUTH_V12_VIEWS !== 'undefined' && Array.isArray(AUTH_V12_VIEWS)) {
+        modules.forEach(function (id) {
+          if (!id || AUTH_V12_VIEWS.some(function (view) { return view && view.id === id; })) return;
+          var exists = document.getElementById('view-' + id)
+            || document.querySelector('[data-view="' + id + '"]')
+            || (typeof VIEW_META !== 'undefined' && VIEW_META[id]);
+          if (!exists) return;   // granted but no such section: leave it out
+          var label = (typeof VIEW_META !== 'undefined' && VIEW_META[id] && VIEW_META[id][0]) || id;
+          AUTH_V12_VIEWS.push({ id: id, label: label, desc: '' });
+        });
+      }
       seedErpAuth(role, name, uid, modules);
       if (typeof authResolveSession === 'function') authResolveSession();
       if (typeof authApplyPermissions === 'function') authApplyPermissions();
