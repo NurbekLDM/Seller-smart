@@ -69,6 +69,9 @@
   })();
   var OUTBOX_KEY = OUTBOX_PREFIX + '-' + TAB_ID;
   var WRITE_DEBOUNCE_MS = 400;
+  /* Below this a whole value is small enough that diffing it is not worth
+     the extra machinery; above it, one edit was costing megabytes. */
+  var DELTA_MIN_BYTES = 65536;
   /* How often to check the workspace for changes this terminal has not
      been told about. See reconcile(). */
   var RECONCILE_MS = 45000;
@@ -146,6 +149,19 @@
   /* Whether this database has the revisions migration. Flipped off by the
      first flush that finds save_workspace_kv missing. */
   var conditionalWrites = true;
+  /* Delta writes are OFF.
+
+     They work on small lists and on a synthetic 6 249-element list, and
+     they cut a one-cell edit from 1.27 MB to 300 bytes. Against the real
+     srerp_cells value they emptied the row, twice, and the cause is not
+     yet understood — the same RPC, the same shape, the same element count,
+     a different outcome.
+
+     A saving that costs the warehouse map is not a saving. The path stays
+     in the code, tested and ready, but nothing takes it until the failure
+     is explained and reproduced on data that is not a shop's. Whole values
+     are what ships. */
+  var deltaWrites = false;
 
   // Remote DELETEs arriving in a burst: a bulk server-side operation, not
   // the app deleting keys. See the realtime handler.
@@ -298,6 +314,36 @@
     return out;
   }
 
+  /* What changed between two versions of the same list.
+
+     The ERP has no concept of writing one row: changing a single warehouse
+     cell rewrites the whole srerp_cells array, and this store faithfully
+     uploaded all 1.27 MB of it. A worker placing fifty items sent about
+     63 MB. Sending what actually changed turns that into a few hundred
+     bytes; see save_workspace_kv_delta().
+
+     Returns null whenever a diff cannot be trusted — not both lists, or
+     elements without a stable id — and the caller sends the whole value,
+     which is what it always did. */
+  function listDiff(baseText, nextText) {
+    var was = parse(baseText);
+    var now = parse(nextText);
+    if (!was.ok || !now.ok) return null;
+    if (!Array.isArray(was.value) || !Array.isArray(now.value)) return null;
+    var before = indexById(was.value);
+    var after = indexById(now.value);
+    if (!before || !after) return null;
+
+    var changed = [];
+    after.forEach(function (item, id) {
+      var previous = before.get(id);
+      if (!previous || !same(previous, item)) changed.push(item);
+    });
+    var removed = [];
+    before.forEach(function (_item, id) { if (!after.has(id)) removed.push(id); });
+    return { changed: changed, removed: removed };
+  }
+
   function threeWayMerge(baseText, mineText, theirsText) {
     var b = parse(typeof baseText === 'string' ? baseText : 'null');
     var m = parse(mineText);
@@ -334,8 +380,21 @@
     var upserts = [];
     var deletes = [];
     batch.forEach(function (op, key) {
-      if (op === 'delete') deletes.push(key);
-      else upserts.push({ workspace_id: workspaceId, key: key, value: memory.get(key) });
+      if (op === 'delete') { deletes.push(key); return; }
+      var value = memory.get(key);
+      /* Never send anything but the string the app wrote. If the store's
+         copy of a key is not a string then something upstream corrupted it,
+         and persisting that would push the corruption to every terminal.
+         Drop the write and re-read instead. */
+      if (typeof value !== 'string') {
+        console.error('Workspace store: refusing to save ' + key + ' — local copy is '
+          + (value === undefined ? 'missing' : typeof value) + '. Re-reading.');
+        dirty.delete(key);
+        memory.delete(key);
+        refreshKey(key);
+        return;
+      }
+      upserts.push({ workspace_id: workspaceId, key: key, value: value });
     });
     announce('syncing', 'Saqlanmoqda...');
     try {
@@ -344,13 +403,52 @@
            built on. The server refuses any whose base has moved and hands
            back what is actually stored, so a second terminal's change is
            merged rather than overwritten. */
-        var payload = upserts.map(function (row) {
+        var payload = [];
+        var deltaPayload = [];
+        upserts.forEach(function (row) {
           var known = base.get(row.key);
-          return { key: row.key, value: row.value, expected: known ? known.revision : null };
+          var expected = known ? known.revision : null;
+          var diff = null;
+          if (known && expected !== null && String(row.value).length >= DELTA_MIN_BYTES) {
+            diff = listDiff(known.value, row.value);
+            /* A diff that is not much smaller than the value buys nothing
+               and costs a second code path, so fall back. */
+            if (diff && JSON.stringify(diff).length > String(row.value).length / 2) diff = null;
+          }
+          if (diff) deltaPayload.push({ key: row.key, expected: expected, changed: diff.changed, removed: diff.removed });
+          else payload.push({ key: row.key, value: row.value, expected: expected });
         });
+
         var written = conditionalWrites
           ? await client.rpc('save_workspace_kv', { entries: payload })
           : { data: null, error: { code: 'PGRST202' } };
+
+        /* Deltas go to their own function. If that one is missing — its
+           migration not applied yet — resend those keys whole rather than
+           losing them, and stop trying. */
+        if (conditionalWrites && deltaPayload.length) {
+          var delta = deltaWrites
+            ? await client.rpc('save_workspace_kv_delta', { entries: deltaPayload })
+            : { data: null, error: { code: 'PGRST202' } };
+          if (delta.error && (delta.error.code === 'PGRST202'
+              || /Could not find the function/i.test(delta.error.message || ''))) {
+            if (deltaWrites) {
+              deltaWrites = false;
+              console.warn('Workspace store: save_workspace_kv_delta is missing; '
+                + 'sending whole values until its migration is applied.');
+            }
+            deltaPayload.forEach(function (entry) {
+              payload.push({ key: entry.key, value: memory.get(entry.key), expected: entry.expected });
+            });
+            var resent = await client.rpc('save_workspace_kv', { entries: payload });
+            if (resent.error) throw decorate(resent.error);
+            written = resent;
+          } else if (delta.error) {
+            throw decorate(delta.error);
+          } else if (!written.error) {
+            written = { data: (written.data || []).concat(delta.data || []), error: null };
+          }
+        }
 
         /* The revisions migration has not been applied to this database
            yet. Rather than leave a till unable to save anything, fall back
@@ -691,6 +789,30 @@
     }
   }
 
+  /* Pull one key's current value. Used when a change notification arrives
+     without a usable value in it — see the realtime handler. */
+  async function refreshKey(key) {
+    if (!online || dirty.has(key)) return;
+    try {
+      var row = await client.from(TABLE)
+        .select('key, value, revision')
+        .eq('workspace_id', workspaceId)
+        .eq('key', key)
+        .maybeSingle();
+      if (row.error || !row.data) return;
+      if (dirty.has(key)) return;   // changed here while the fetch was out
+      var text = typeof row.data.value === 'string' ? row.data.value : null;
+      if (text === null) return;    // still not a string: leave what we have
+      base.set(key, { value: text, revision: Number(row.data.revision) || 1 });
+      if (memory.get(key) === text) return;
+      memory.set(key, text);
+      seen.add(key);
+      if (typeof onRemote === 'function') onRemote(key);
+    } catch (_) {
+      /* the reconciler will pick it up */
+    }
+  }
+
   /* ------------------------------ realtime ------------------------------ */
 
   function listen(onRemoteChange) {
@@ -736,8 +858,24 @@
           memory.delete(key);
           base.delete(key);
         } else {
-          var value = payload.new ? payload.new.value : null;
-          var next = typeof value === 'string' ? value : JSON.stringify(value);
+          var value = payload.new ? payload.new.value : undefined;
+
+          /* Realtime does not carry the row when it is too big: Supabase
+             caps a change payload at about 1 MB, and srerp_cells alone is
+             1.27 MB. What arrives then has no `value` at all, and the old
+             code ran it through JSON.stringify — which turns undefined into
+             the value undefined, not a string. That went straight into
+             memory, so every terminal watching lost its copy of the cell
+             map the moment another one edited a cell, and the ERP then
+             wrote the nothing it read back over the real rows.
+
+             A notification says the key changed. It is not a source of the
+             value. Anything that is not a string means fetch it. */
+          if (typeof value !== 'string') {
+            refreshKey(key);
+            return;
+          }
+          var next = value;
           // Keep the agreed state current even when the value is unchanged,
           // or the next write would be sent with a stale expected revision
           // and conflict for no reason.
@@ -912,6 +1050,9 @@
        moment, which is not something to verify by trying it on a shop.
        See scripts/test-merge.mjs. Pure: no state, no I/O. */
     threeWayMerge: threeWayMerge,
+    /* Exposed alongside the merge: what a write actually sends for a large
+       list is worth being able to check directly. */
+    listDiff: listDiff,
     /* Resolves once the workspace has been fetched at least once. */
     ready: function () { return readyPromise; },
     synced: synced,
