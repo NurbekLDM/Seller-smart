@@ -818,7 +818,10 @@
     window.removeEventListener('error', noteParseFailure);
     if (failures.length) {
       console.error('ERP modules that failed to run (' + failures.length + ' of '
-        + blocks.length + '):', failures);
+        + blocks.length + '):', JSON.stringify(failures));
+      // Also parked here: a console object is not readable from outside the
+      // page, and knowing WHICH module is dark is the whole point.
+      try { window.smartRetailErpModuleFailures = failures; } catch (_) { /* ignore */ }
     }
     /* Those blocks register ~53 DOMContentLoaded listeners and several
        load listeners. Both events fired long ago, while the blocks were
