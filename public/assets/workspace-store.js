@@ -1135,6 +1135,11 @@
        terminal, so a wipe is never mistaken for the user deleting their
        workspace and pushed to the database. */
     suspend: function () {
+      /* Same rule as forget(): once a terminal has been told to stop, it
+         accepts no further writes. The logout path calls suspend() first
+         and forget() a few lines later, and whatever runs in between is
+         teardown - it must not end up in the outbox. */
+      stopped = true;
       online = false;
       window.clearTimeout(writeTimer);
       writeTimer = null;
