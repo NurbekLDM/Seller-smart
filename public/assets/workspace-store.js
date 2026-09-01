@@ -69,6 +69,9 @@
   })();
   var OUTBOX_KEY = OUTBOX_PREFIX + '-' + TAB_ID;
   var WRITE_DEBOUNCE_MS = 400;
+  /* How often to check the workspace for changes this terminal has not
+     been told about. See reconcile(). */
+  var RECONCILE_MS = 45000;
   var RETRY_BASE_MS = 2000;
   var RETRY_MAX_MS = 30000;
 
@@ -147,6 +150,9 @@
   // Remote DELETEs arriving in a burst: a bulk server-side operation, not
   // the app deleting keys. See the realtime handler.
   var recentDeletes = [];
+  var channelState = 'idle';   // what subscribe() last reported
+  var lastRemoteAt = 0;        // when Realtime last delivered anything
+  var reconcileTimer = null;
 
   /* Resolves the first time the workspace has been fetched. Anything that
      must not run against an empty store waits on this — the platform's ERP
@@ -612,6 +618,79 @@
     }
   }
 
+  /* Realtime is an optimisation. This is the correctness mechanism.
+
+     Measured on the preview: after a session had been open for a while,
+     Realtime stopped delivering entirely — one terminal wrote, the other
+     never heard, and neither reported anything wrong. The likely cause is
+     the access token expiring under the socket, but the cause matters less
+     than the shape of the failure: a shop where the tills silently stop
+     seeing each other is exactly the problem this whole rewrite set out to
+     fix, and it must not depend on a websocket staying healthy.
+
+     So the workspace is re-checked on a timer. The check is one small
+     query — every key's revision, not its value — and only the keys whose
+     revision has moved are fetched. On an idle shop that is a few hundred
+     bytes a minute. */
+  async function reconcile() {
+    if (!online || flushing || resyncing || !hydrated) return;
+    try {
+      var listing = await client.from(TABLE)
+        .select('key, revision')
+        .eq('workspace_id', workspaceId);
+      if (listing.error) return;
+
+      var present = new Set();
+      var stale = [];
+      (listing.data || []).forEach(function (row) {
+        present.add(row.key);
+        if (excluded.indexOf(row.key) !== -1) return;
+        if (dirty.has(row.key)) return;            // our own unsent work is newer
+        if (pendingDeferred.has(row.key)) return;  // already on its way
+        var known = base.get(row.key);
+        if (!known || known.revision !== (Number(row.revision) || 1)) stale.push(row.key);
+      });
+
+      var vanished = [];
+      base.forEach(function (_entry, key) {
+        if (!present.has(key) && !dirty.has(key)) vanished.push(key);
+      });
+
+      if (!stale.length && !vanished.length) return;
+
+      if (stale.length) {
+        var fresh = await client.from(TABLE)
+          .select('key, value, revision')
+          .eq('workspace_id', workspaceId)
+          .in('key', stale);
+        if (fresh.error) return;
+        (fresh.data || []).forEach(function (row) {
+          if (dirty.has(row.key)) return;  // changed here while in flight
+          var text = typeof row.value === 'string' ? row.value : JSON.stringify(row.value);
+          memory.set(row.key, text);
+          base.set(row.key, { value: text, revision: Number(row.revision) || 1 });
+          seen.add(row.key);
+        });
+      }
+
+      /* Keys the workspace no longer has. A handful is an ordinary delete
+         and may be believed — including dropping them from `seen`, so they
+         can be created again. A large number is a bulk operation caught
+         mid-flight, and believing THAT is how the shop gets blanked. */
+      if (vanished.length && vanished.length <= 3) {
+        vanished.forEach(function (key) {
+          memory.delete(key);
+          base.delete(key);
+          seen.delete(key);
+        });
+      }
+
+      if (typeof onRemote === 'function') onRemote(null);
+    } catch (_) {
+      /* the next tick tries again */
+    }
+  }
+
   /* ------------------------------ realtime ------------------------------ */
 
   function listen(onRemoteChange) {
@@ -667,9 +746,10 @@
           memory.set(key, next);
           seen.add(key);
         }
+        lastRemoteAt = Date.now();
         if (typeof onRemoteChange === 'function') onRemoteChange(key);
       })
-      .subscribe();
+      .subscribe(function (status) { channelState = String(status || 'unknown'); });
   }
 
   /* -------------------------- the localStorage shim ---------------------
@@ -809,6 +889,8 @@
       var count = await hydrate();
       online = true;
       listen(onRemoteChange);
+      window.clearInterval(reconcileTimer);
+      reconcileTimer = window.setInterval(reconcile, RECONCILE_MS);
       if (dirty.size) flush();
       announce('online', 'Bazaga ulangan');
       return count;
@@ -819,6 +901,8 @@
     /* Fetch the keys start() was told to defer. The caller decides when —
        after the app is on screen, not before. */
     loadDeferred: loadDeferred,
+    /* Re-check the workspace now rather than waiting for the timer. */
+    reconcile: reconcile,
     /* True while a deferred key is still on its way, so a screen that
        needs it can wait rather than render an empty one. */
     isPending: function (key) { return pendingDeferred.has(key); },
@@ -842,7 +926,12 @@
         hydrated: hydrated,
         keys: memory.size,
         unsent: dirty.size,
-        flushing: flushing
+        flushing: flushing,
+        // Realtime is a speed-up, not the correctness mechanism — see
+        // reconcile() — but a silently dead channel is worth being able
+        // to see rather than having to infer.
+        realtime: channelState,
+        lastRemoteAgoMs: lastRemoteAt ? Date.now() - lastRemoteAt : null
       };
     },
     /* Stop writing for good — logout calls this before it clears the
@@ -871,6 +960,8 @@
       online = false;
       window.clearTimeout(writeTimer);
       writeTimer = null;
+      window.clearInterval(reconcileTimer);
+      reconcileTimer = null;
       dirty.clear();
       memory.clear();
       seen.clear();
