@@ -734,6 +734,69 @@
     window.setInterval(pullRemote, REMOTE_POLL_MS);
   }
 
+  /* ------------------------ staff permissions --------------------------- */
+
+  /* The ERP has three built-in roles — ADMIN, WMS, POS — and every guarded
+     action asks authRequireRole(['ADMIN']) or ['ADMIN','WMS'] and so on, in
+     32 places. Its v12 layer added per-user section permissions and
+     replaced authCanView() with them, which is why a staff member SEES the
+     sections the owner ticked. It did not touch authRequireRole.
+
+     Staff are seeded as role 'CUSTOM', which appears in none of those
+     lists, so every guarded action was refused. The customer's report:
+     "faqat ko'rish va mahsulot joylash va sotish ishlayapdi" — viewing
+     works, and so do the few paths that carry no guard at all.
+
+     The call sites name roles, never the action, so there is nothing to
+     map a permission onto. What there IS, at the moment of the click, is
+     the section the user is in. Ticking a section is the owner saying this
+     person works here, so an action inside a granted section is allowed
+     and everything else still falls through to the ERP's own answer.
+
+     Note this cannot grant more than the owner ticked: a section that was
+     not granted is hidden by authCanView() and cannot be opened. */
+  function relaxStaffRoleGuards() {
+    if (typeof window.authRequireRole !== 'function' || window.authRequireRole.srStaffAware) return;
+    var base = window.authRequireRole;
+    var wrapped = function (roles) {
+      try {
+        // `authCurrentUser` is a top-level `let` in the ERP: a global
+        // binding, but not a property of window.
+        var user = (typeof authCurrentUser !== 'undefined') ? authCurrentUser : null;
+        if (user && user.active && user.role === 'CUSTOM') {
+          var granted = Array.isArray(user.permissions) ? user.permissions : [];
+          if (granted.indexOf('*') !== -1) return true;
+          var active = document.querySelector('#sidebar .nav-link-erp[data-view].active');
+          var view = active ? active.getAttribute('data-view') : '';
+          if (view && granted.indexOf(view) !== -1) return true;
+        }
+      } catch (_) { /* fall through to the ERP's own decision */ }
+      return base.apply(this, arguments);
+    };
+    wrapped.srStaffAware = true;
+    window.authRequireRole = wrapped;
+  }
+
+  /* authV12NormalizeList() drops any permission whose view does not exist
+     YET, and the result is written back over the stored list. Several
+     sections register themselves late — Sotuvlar tarixi is created by the
+     operations module at run time — so a permission the owner granted was
+     quietly deleted before the section it names had appeared. Measured on
+     a live staff account: the profile carried 25 modules and the ERP had
+     24, missing exactly `saleshistory`.
+
+     Re-seeding once every module has installed puts the owner's list back,
+     now that every view it names exists. */
+  function restoreGrantedModules(role, name, uid, modules) {
+    try {
+      seedErpAuth(role, name, uid, modules);
+      if (typeof authResolveSession === 'function') authResolveSession();
+      if (typeof authApplyPermissions === 'function') authApplyPermissions();
+    } catch (error) {
+      console.warn('Staff permissions could not be re-applied:', error.message);
+    }
+  }
+
   /* --------------------- Postgres-backed store boot --------------------- */
 
   /* The till cannot open until the workspace has been fetched — that is
@@ -863,6 +926,12 @@
         /* These wrap functions the ERP itself defines, so the earlier
            attempt at DOMContentLoaded found nothing to wrap. */
         hookLogout();
+        var staffRole = (profile.workspace_owner || profile.erp_role === 'STAFF') ? 'STAFF' : 'OWNER';
+        if (staffRole === 'STAFF') {
+          restoreGrantedModules(staffRole, profile.username || '', session.user.id,
+            Array.isArray(profile.erp_modules) ? profile.erp_modules : []);
+          relaxStaffRoleGuards();
+        }
         if (!profile.workspace_owner && profile.erp_role !== 'STAFF') {
           try {
             var reconcile = hookEmployeeManagement();
