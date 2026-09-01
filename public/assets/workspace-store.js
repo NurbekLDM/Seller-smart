@@ -167,6 +167,9 @@
   /* Whether this database has the revisions migration. Flipped off by the
      first flush that finds save_workspace_kv missing. */
   var conditionalWrites = true;
+  /* Set by forget(); cleared by start(). While true this terminal accepts
+     no writes at all - see queue(). */
+  var stopped = false;
   /* Delta writes are OFF.
 
      They work on small lists and on a synthetic 6 249-element list, and
@@ -382,6 +385,16 @@
   /* ------------------------------- writes ------------------------------- */
 
   function queue(key, op) {
+    /* forget() means this terminal has let the workspace go - a logout, or
+       a different account signing in. Anything the page writes afterwards
+       is teardown, not work: the ERP tearing its own state down, or a wipe
+       running through the shim. Queueing it re-arms the outbox that
+       forget() just cleared, and the next login replays it as a delete of
+       every key it names.
+
+       Measured: calling localStorage.clear() after suspend() queued a
+       delete for all 38 keys in the workspace. */
+    if (stopped) return;
     dirty.set(key, op);
     persistOutbox();
     if (!online) return;
@@ -1057,6 +1070,7 @@
     start: async function (supabaseClient, workspace, onRemoteChange, options) {
       client = supabaseClient;
       workspaceId = workspace;
+      stopped = false;
       excluded = (options && Array.isArray(options.exclude)) ? options.exclude.slice() : [];
       deferred = (options && Array.isArray(options.defer)) ? options.defer.slice() : [];
       onRemote = onRemoteChange;
@@ -1140,6 +1154,7 @@
        shop. Anything that means "this terminal should stop holding the
        previous session's data" must call this instead. */
     forget: function () {
+      stopped = true;
       online = false;
       window.clearTimeout(writeTimer);
       writeTimer = null;
