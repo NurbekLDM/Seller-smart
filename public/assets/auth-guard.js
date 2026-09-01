@@ -440,6 +440,11 @@
       setAuthCookie('', 0);
 
       if (!unsaved) {
+        /* Stop the sync engine before erasing anything. Every localStorage
+           write now feeds the engine, so the wipe below would otherwise be
+           announced as a change and re-arm the unsent-work marker this
+           logout just cleared. */
+        try { if (sync && sync.suspend) sync.suspend(); } catch (_) { /* ignore */ }
         wipeLocalStorageSync();
         try { indexedDB.deleteDatabase('uzum-analytics-pro'); } catch (_) { /* ignore */ }
         try {

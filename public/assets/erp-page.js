@@ -304,6 +304,11 @@
     Promise.race([pendingFlush, cap]).then(function () {
       // Revoke server-side while the session is still readable, then purge.
       try { client.auth.signOut(); } catch (_) { /* fire and forget */ }
+      /* Stop the engine before anything below erases local data. Every
+         localStorage write now feeds the engine, so the wipe itself would
+         otherwise be announced as a change and re-arm the unsent-work
+         marker this logout just cleared. */
+      syncActive = false;
       purgeSupabaseStorage();
       /* Auth material is always gone by now. The shift's data may only be
          erased once the database actually has it — wiping a till whose
@@ -495,6 +500,7 @@
     if (!syncActive || applying) return;
     if (busy) { delayed = true; return; }
     busy = true;
+    firstChangeAt = 0; // the max-wait window restarts with the next change
     var flushedSeq = pendingSeq; // changes arriving mid-RPC are not covered
     announce('syncing', 'Saqlanmoqda...');
     try {
@@ -526,11 +532,97 @@
     }
   }
 
+  /* Coalesce a burst of writes into one push, but never postpone a push
+     indefinitely. A till writes continuously while a sale is being rung
+     up, and a debounce that restarts on every change then never fires:
+     the shift's work stayed in the browser until logout swept it up. */
+  var DEBOUNCE_MS = 900;
+  var MAX_DEBOUNCE_MS = 4000;
+  var SAFETY_FLUSH_MS = 15000;
+  var REMOTE_POLL_MS = 12000;
+  var firstChangeAt = 0;
+  var storagePatched = false;
+
   function notify() {
-    if (!syncActive || applying) return;
+    if (!syncActive || applying || signingOut) return;
     markPending();
+    var now = Date.now();
+    if (!firstChangeAt) firstChangeAt = now;
     window.clearTimeout(timer);
-    timer = window.setTimeout(flush, 900);
+    var wait = Math.max(0, Math.min(DEBOUNCE_MS, firstChangeAt + MAX_DEBOUNCE_MS - now));
+    timer = window.setTimeout(flush, wait);
+  }
+
+  /* Several people share one account (two cashiers on two tills, the owner
+     in the office). Each terminal used to sit on its own local copy with
+     nothing ever pulling the others' work in, so a till only learned about
+     the rest of the workspace when a push happened to collide. Poll the
+     row's version -- one small column -- and adopt a newer snapshot as soon
+     as another terminal publishes one.
+
+     Skipped while this terminal holds unsent work: that is the flush's
+     version_conflict path, which backs the local state up before adopting
+     the server's, and must not be pre-empted by a silent overwrite. */
+  async function pullRemote() {
+    if (!syncActive || busy || applying || pending || signingOut) return;
+    busy = true;
+    try {
+      adoptSharedRevision();
+      var head = await client.from('app_state').select('version').maybeSingle();
+      if (head.error || !head.data) return;
+      if ((Number(head.data.version) || 0) <= revision) return;
+      var full = await client.from('app_state').select('version, snapshot').maybeSingle();
+      if (full.error || !full.data) return;
+      var next = Number(full.data.version) || 0;
+      // A write landed here while the snapshot was in flight -- leave it to
+      // flush(), which protects it, rather than restoring straight over it.
+      if (next <= revision || pending) return;
+      revision = next;
+      publishRevision();
+      restore(full.data.snapshot || {});
+      announce('online', 'Yangilandi \u00b7 v' + revision);
+    } catch (_) {
+      /* the next tick retries */
+    } finally {
+      busy = false;
+      if (delayed && syncActive) { delayed = false; timer = window.setTimeout(flush, 800); }
+    }
+  }
+
+  /* db_set is only ONE of the ERP's write paths. Large parts of it (WMS,
+     cells, orders, waybills, purchases, settings, audit) call
+     localStorage.setItem directly, and those writes were never announced
+     to the sync engine -- so they sat in the browser for the whole shift
+     and only reached the database at logout, when flush()'s collect()
+     re-read localStorage and swept them up. That is precisely the reported
+     symptom. Patching the Storage prototype makes EVERY write path notify
+     the engine, whichever module performed it. */
+  function hookStorageWrites() {
+    var proto = window.Storage && window.Storage.prototype;
+    if (!proto || storagePatched) return;
+    storagePatched = true;
+    var setItem = proto.setItem;
+    var removeItem = proto.removeItem;
+    var clearAll = proto.clear;
+    /* sessionStorage shares this prototype, so every hook checks that it
+       was localStorage that was written. The engine's own bookkeeping keys
+       (sr-pending-changes, sr-ws-revision) are not `permitted`, so
+       markPending()/publishRevision() cannot recurse back in here. */
+    proto.setItem = function (key, value) {
+      var output = setItem.apply(this, arguments);
+      try { if (this === window.localStorage && permitted(key)) notify(); } catch (_) { /* ignore */ }
+      return output;
+    };
+    proto.removeItem = function (key) {
+      var output = removeItem.apply(this, arguments);
+      try { if (this === window.localStorage && permitted(key)) notify(); } catch (_) { /* ignore */ }
+      return output;
+    };
+    proto.clear = function () {
+      var output = clearAll.apply(this, arguments);
+      try { if (this === window.localStorage) notify(); } catch (_) { /* ignore */ }
+      return output;
+    };
   }
 
   function hookSync() {
@@ -544,11 +636,28 @@
       wrapped.srWrapped = true;
       window.db_set = wrapped;
     }
+    hookStorageWrites();
     window.addEventListener('storage', function (event) {
       if (event.key === WS_REVISION_KEY) { adoptSharedRevision(); return; }
       if (permitted(event.key)) notify();
     });
     window.addEventListener('online', notify);
+
+    /* Last-resort net: anything the hooks still miss (a write made while
+       `applying` was set, a flush that failed and left work behind) goes
+       up on the next tick instead of waiting for the logout button. */
+    window.setInterval(function () {
+      if (syncActive && pending && !busy && !applying && !signingOut) flush();
+    }, SAFETY_FLUSH_MS);
+
+    /* A till is closed, locked or switched away from far more often than
+       it is logged out of. Push whatever is unsent at that moment. */
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden' && pending) flush();
+    });
+    window.addEventListener('pagehide', function () { if (pending) flush(); });
+
+    window.setInterval(pullRemote, REMOTE_POLL_MS);
   }
 
   /* ------------------------- session readiness -------------------------- */
@@ -591,6 +700,7 @@
         var expired = profile && profile.expires_at && new Date(profile.expires_at).getTime() <= Date.now();
         if (!profile || !profile.active || expired) {
           signingOut = true;
+          syncActive = false;
           try { client.auth.signOut(); } catch (_) { /* ignore */ }
           wipeLocalWorkspace();
           purgeSupabaseStorage();

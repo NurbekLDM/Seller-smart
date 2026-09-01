@@ -71,6 +71,17 @@
   var timeout = null;
   var subscribers = new Set();
 
+  /* Coalesce a burst of writes into one push, but never postpone a push
+     indefinitely: a debounce that restarts on every change never fires
+     while the user keeps working, which left the whole session's work in
+     the browser until the logout button forced the final flush. */
+  var DEBOUNCE_MS = 900;
+  var MAX_DEBOUNCE_MS = 4000;
+  var SAFETY_FLUSH_MS = 15000;
+  var REMOTE_POLL_MS = 12000;
+  var firstChangeAt = 0;
+  var storagePatched = false;
+
   function client() { return window.smartRetailSupabase || null; }
 
   /* Interface language belongs to the device, not the workspace. The i18n
@@ -188,6 +199,7 @@
     if (!active || applying) return;
     if (busy) { delayed = true; return; }
     busy = true;
+    firstChangeAt = 0; // the max-wait window restarts with the next change
     // Changes that land while the RPC is in flight are NOT covered by it.
     var flushedSeq = pendingSeq;
     announce('syncing', 'Bazaga saqlanmoqda...');
@@ -232,8 +244,80 @@
   function notify() {
     if (!active || applying) return;
     markPending();
+    var now = Date.now();
+    if (!firstChangeAt) firstChangeAt = now;
     window.clearTimeout(timeout);
-    timeout = window.setTimeout(flush, 900);
+    var wait = Math.max(0, Math.min(DEBOUNCE_MS, firstChangeAt + MAX_DEBOUNCE_MS - now));
+    timeout = window.setTimeout(flush, wait);
+  }
+
+  /* Two or three people work one account at once (a cashier at the till,
+     the owner in the office). Nothing used to pull another device's work
+     in, so each browser sat on its own copy until a push happened to
+     collide. Poll the row's version -- one small column -- and adopt a
+     newer snapshot as soon as another device publishes one.
+
+     Skipped while this device holds unsent work: that case belongs to
+     flush()'s version_conflict path, which backs the divergent local state
+     up before adopting the server's. */
+  async function pullRemote() {
+    if (!active || busy || applying || pending) return;
+    busy = true;
+    try {
+      adoptSharedRevision();
+      var head = await client().from('app_state').select('version').maybeSingle();
+      if (head.error || !head.data) return;
+      if ((Number(head.data.version) || 0) <= revision) return;
+      var data = await readServerState();
+      var next = Number(data.version) || 0;
+      // A change landed here while the snapshot was in flight -- leave it
+      // to flush(), which protects it, rather than restoring over it.
+      if (next <= revision || pending) return;
+      revision = next;
+      publishRevision();
+      await restore(data.snapshot || {});
+      announce('online', 'Yangilandi \u00b7 v' + revision);
+    } catch (_) {
+      /* the next tick retries */
+    } finally {
+      busy = false;
+      if (delayed && active) { delayed = false; timeout = window.setTimeout(flush, 800); }
+    }
+  }
+
+  /* saveState() is only ONE of the write paths into the synced key space.
+     The ERP modules write plenty of `srerp_*` keys with a direct
+     localStorage.setItem, and those writes were never announced to the
+     engine -- they sat in the browser and only reached the database at
+     logout, when flush()'s collect() re-read localStorage and swept them
+     up. Patching the Storage prototype makes every write path notify the
+     engine, whichever module performed it. */
+  function hookStorageWrites() {
+    var proto = window.Storage && window.Storage.prototype;
+    if (!proto || storagePatched) return;
+    storagePatched = true;
+    var setItem = proto.setItem;
+    var removeItem = proto.removeItem;
+    var clearAll = proto.clear;
+    /* sessionStorage shares this prototype, so every hook checks that it
+       was localStorage that was written. The engine's own bookkeeping keys
+       (sr-pending-changes, sr-ws-revision) are not `permitted`, so
+       markPending()/publishRevision() cannot recurse back in here. */
+    proto.setItem = function (key, value) {
+      var output = setItem.apply(this, arguments);
+      try { if (this === window.localStorage && permitted(key)) notify(); } catch (_) { /* ignore */ }
+      return output;
+    };
+    proto.removeItem = function (key) {
+      var output = removeItem.apply(this, arguments);
+      try { if (this === window.localStorage && permitted(key)) notify(); } catch (_) { /* ignore */ }
+      return output;
+    };
+    proto.clear = function () {
+      var output = clearAll.apply(this, arguments);
+      try { if (this === window.localStorage) notify(); } catch (_) { /* ignore */ }
+      return output;
+    };
   }
 
   window.smartRetailAnalyticsServerSync = {
@@ -248,6 +332,15 @@
     // `pending` is true while this device holds changes the database has
     // not accepted yet — logout checks it before wiping local data.
     status: function () { return { active: active, revision: revision, busy: busy, pending: pending }; },
+    /* Stop the engine for good. Logout calls this before erasing local
+       data: every localStorage write now feeds the engine, so the wipe
+       itself would otherwise be announced as a change and re-arm the
+       unsent-work marker the logout just cleared. */
+    suspend: function () {
+      active = false;
+      delayed = false;
+      window.clearTimeout(timeout);
+    },
     reload: async function () {
       var data = await readServerState();
       revision = Number(data.version) || 0;
@@ -413,11 +506,28 @@
           return output;
         };
       }
+      hookStorageWrites();
       window.addEventListener('storage', function (event) {
         if (event.key === WS_REVISION_KEY) { adoptSharedRevision(); return; }
         if (permitted(event.key)) notify();
       });
       window.addEventListener('online', notify);
+
+      /* Last-resort net: anything the hooks still miss (a write made while
+         `applying` was set, a flush that failed and left work behind) goes
+         up on the next tick instead of waiting for the logout button. */
+      window.setInterval(function () {
+        if (active && pending && !busy && !applying) flush();
+      }, SAFETY_FLUSH_MS);
+
+      /* A tab is closed, backgrounded or switched away from far more often
+         than it is logged out of. Push whatever is unsent at that moment. */
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'hidden' && pending) flush();
+      });
+      window.addEventListener('pagehide', function () { if (pending) flush(); });
+
+      window.setInterval(pullRemote, REMOTE_POLL_MS);
       // The app's reset buttons (clearDataBtn/hardResetBtn) clear local data
       // without calling saveState, so the cleared state never reached the
       // database and reappeared on reload. Wrap their handlers so the sync
