@@ -774,6 +774,21 @@
     var blocks = document.querySelectorAll('script[type="text/sr-deferred"]');
     if (!blocks.length) return 0;
     var failures = [];
+
+    /* A script that fails to PARSE does not throw to the caller: the
+       browser reports it as an uncaught error on window and moves on, so
+       the try/catch below never sees it and the module silently does not
+       run. Listening here is the only way to learn which one — and which
+       one it is matters, because these blocks are whole ERP features. */
+    var running = null;
+    function noteParseFailure(event) {
+      if (!running) return;
+      failures.push({ index: running.index, id: running.id, bytes: running.bytes,
+                      error: (event && event.message) || 'parse error',
+                      at: event ? (event.lineno + ':' + event.colno) : '?' });
+    }
+    window.addEventListener('error', noteParseFailure);
+
     for (var index = 0; index < blocks.length; index += 1) {
       var inert = blocks[index];
       var live = document.createElement('script');
@@ -782,6 +797,7 @@
         if (attribute.name.toLowerCase() !== 'type') live.setAttribute(attribute.name, attribute.value);
       }
       live.text = inert.textContent;
+      running = { index: index, id: inert.id || '(no id)', bytes: (inert.textContent || '').length };
       /* Replacing the node executes it synchronously, in order.
 
          Wrapped because these blocks used to run during parsing, where the
@@ -797,7 +813,9 @@
         // Take the inert node out anyway so it cannot be run twice.
         try { inert.parentNode.removeChild(inert); } catch (_) { /* ignore */ }
       }
+      running = null;
     }
+    window.removeEventListener('error', noteParseFailure);
     if (failures.length) {
       console.error('ERP modules that failed to run (' + failures.length + ' of '
         + blocks.length + '):', failures);
