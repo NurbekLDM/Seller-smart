@@ -522,6 +522,22 @@ function deferInlineScripts(html, startIndex) {
   for (;;) {
     const open = html.indexOf('<script', cursor);
     if (open === -1) { output += html.slice(cursor); break; }
+
+    /* `<script` is only a tag when what follows it can start an attribute
+       or close the tag. The ERP's own source contains the literal
+       "<script[^>" inside a regular expression, and treating that as a tag
+       rewrote it into `<script type="text/sr-deferred"[^>` - broken
+       JavaScript that stopped the whole crm21ServerSync module from
+       parsing, silently, with the browser reporting only a line number
+       inside the wreckage. Skip anything that is merely the seven
+       characters. */
+    const after = html[open + 7];
+    if (!(after === '>' || after === '/' || /\s/.test(after || ''))) {
+      output += html.slice(cursor, open + 7);
+      cursor = open + 7;
+      continue;
+    }
+
     const tagEnd = html.indexOf('>', open);
     if (tagEnd === -1) { output += html.slice(cursor); break; }
     const tag = html.slice(open, tagEnd + 1);

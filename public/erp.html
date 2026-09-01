@@ -6584,7 +6584,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(trimmed.startsWith('{'))return JSON.parse(trimmed);
     const patterns=[
       /<template[^>]*id=["']srerpEmbeddedState["'][^>]*>([\s\S]*?)<\/template>/gi,
-      /<script type="text/sr-deferred"[^>]*id=["']srerpEmbeddedState["'][^>]*>([\s\S]*?)<\/script>/gi
+      /<script[^>]*id=["']srerpEmbeddedState["'][^>]*>([\s\S]*?)<\/script>/gi
     ];
     for(const pattern of patterns){
       const matches=[...trimmed.matchAll(pattern)];

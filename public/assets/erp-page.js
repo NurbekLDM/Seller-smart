@@ -27,6 +27,41 @@
     try { return new URL(config.supabaseUrl).hostname.split('.')[0] || ''; } catch (_) { return ''; }
   })();
   var ANALYTICS_KEY = 'srerp_analytics_parent_state';
+  /* The warehouse cell map: 1 548 KB of the till's 1 614 KB fetch, so
+     deferring it looked like nearly all of the boot wait for free.
+
+     It is NOT deferred, because the ERP writes it during boot. Measured on
+     the preview: with the map deferred, the store refused twenty-odd
+     writes to it in the first seconds — the ERP had read nothing and was
+     about to persist an empty array over 6 249 rows, exactly the way this
+     shop was destroyed the first time. The guard held, but a boot that
+     depends on a guard firing twenty times is not a boot.
+
+     Making this cheap needs the cell map to stop being one row: a real
+     table, read by the screens that use it. That is a change to the WMS
+     code, not a flag. */
+  var CELLS_KEY = 'srerp_cells';
+
+  /* Sections a staff account must never hold, whatever the owner ticked.
+
+     The Employees screen creates accounts, lists everyone else's and edits
+     their permissions. That is the owner's authority over other people, not
+     a module of the shop, so it is removed from a staff grant rather than
+     left to the owner to remember.
+
+     The server already refuses staff there — api/staff.js rejects any
+     caller whose profile has a workspace_owner — so this is not what makes
+     it safe. It is what stops a staff member seeing a screen listing their
+     colleagues, and stops the half-working state where the Employees
+     screen appears but the real bridge (owner-only) is not behind it, so
+     anything "created" lives in that browser and can never log in. */
+  var OWNER_ONLY_MODULES = ['employees'];
+
+  function staffModules(modules) {
+    var granted = Array.isArray(modules) ? modules : [];
+    var allowed = granted.filter(function (id) { return OWNER_ONLY_MODULES.indexOf(id) === -1; });
+    return allowed.length ? allowed : ['pos'];
+  }
   // How long logout waits for the final sync push before giving up on it.
   var LOGOUT_FLUSH_MS = 8000;
   var signingOut = false;
@@ -166,7 +201,7 @@
       }));
       var isStaff = role === 'STAFF';
       var entryId = isStaff ? 'AUTH-STAFF-' + String(uid || '').replace(/-/g, '').slice(0, 10) : 'AUTH-ROOT-ADMIN';
-      var permissions = isStaff ? (Array.isArray(modules) && modules.length ? modules : ['pos']) : ['*'];
+      var permissions = isStaff ? staffModules(modules) : ['*'];
       var landing = isStaff ? permissions[0] : 'ceo';
       var users;
       try { users = JSON.parse(localStorage.getItem('srerp_auth_users_v6') || '[]'); } catch (_) { users = []; }
@@ -720,7 +755,118 @@
     window.setInterval(pullRemote, REMOTE_POLL_MS);
   }
 
+  /* ------------------------ staff permissions --------------------------- */
+
+  /* The ERP has three built-in roles — ADMIN, WMS, POS — and every guarded
+     action asks authRequireRole(['ADMIN']) or ['ADMIN','WMS'] and so on, in
+     32 places. Its v12 layer added per-user section permissions and
+     replaced authCanView() with them, which is why a staff member SEES the
+     sections the owner ticked. It did not touch authRequireRole.
+
+     Staff are seeded as role 'CUSTOM', which appears in none of those
+     lists, so every guarded action was refused. The customer's report:
+     "faqat ko'rish va mahsulot joylash va sotish ishlayapdi" — viewing
+     works, and so do the few paths that carry no guard at all.
+
+     The call sites name roles, never the action, so there is nothing to
+     map a permission onto. What there IS, at the moment of the click, is
+     the section the user is in. Ticking a section is the owner saying this
+     person works here, so an action inside a granted section is allowed
+     and everything else still falls through to the ERP's own answer.
+
+     Note this cannot grant more than the owner ticked: a section that was
+     not granted is hidden by authCanView() and cannot be opened. */
+  function relaxStaffRoleGuards() {
+    if (typeof window.authRequireRole !== 'function' || window.authRequireRole.srStaffAware) return;
+    var base = window.authRequireRole;
+    var wrapped = function (roles) {
+      try {
+        // `authCurrentUser` is a top-level `let` in the ERP: a global
+        // binding, but not a property of window.
+        var user = (typeof authCurrentUser !== 'undefined') ? authCurrentUser : null;
+        if (user && user.active && user.role === 'CUSTOM') {
+          var granted = Array.isArray(user.permissions) ? user.permissions : [];
+          if (granted.indexOf('*') !== -1) return true;
+          var active = document.querySelector('#sidebar .nav-link-erp[data-view].active');
+          var view = active ? active.getAttribute('data-view') : '';
+          if (view && granted.indexOf(view) !== -1) return true;
+        }
+      } catch (_) { /* fall through to the ERP's own decision */ }
+      return base.apply(this, arguments);
+    };
+    wrapped.srStaffAware = true;
+    window.authRequireRole = wrapped;
+  }
+
+  /* authV12NormalizeList() drops any permission whose view does not exist
+     YET, and the result is written back over the stored list. Several
+     sections register themselves late — Sotuvlar tarixi is created by the
+     operations module at run time — so a permission the owner granted was
+     quietly deleted before the section it names had appeared. Measured on
+     a live staff account: the profile carried 25 modules and the ERP had
+     24, missing exactly `saleshistory`.
+
+     Re-seeding once every module has installed puts the owner's list back,
+     now that every view it names exists. */
+  function restoreGrantedModules(role, name, uid, modules) {
+    try {
+      /* The filter above only keeps ids listed in AUTH_V12_VIEWS, and some
+         sections never register themselves there. Sotuvlar tarixi adds
+         itself to VIEW_META and to the POS role's views, but not to the v12
+         catalogue, so no amount of re-seeding could keep it: every read
+         stripped it again.
+
+         Anything the owner granted that really exists as a section in the
+         document is registered here, so a grant is never silently dropped
+         because a module forgot to introduce itself. */
+      if (typeof AUTH_V12_VIEWS !== 'undefined' && Array.isArray(AUTH_V12_VIEWS)) {
+        staffModules(modules).forEach(function (id) {
+          if (!id || AUTH_V12_VIEWS.some(function (view) { return view && view.id === id; })) return;
+          var exists = document.getElementById('view-' + id)
+            || document.querySelector('[data-view="' + id + '"]')
+            || (typeof VIEW_META !== 'undefined' && VIEW_META[id]);
+          if (!exists) return;   // granted but no such section: leave it out
+          var label = (typeof VIEW_META !== 'undefined' && VIEW_META[id] && VIEW_META[id][0]) || id;
+          AUTH_V12_VIEWS.push({ id: id, label: label, desc: '' });
+        });
+      }
+      seedErpAuth(role, name, uid, modules);
+      if (typeof authResolveSession === 'function') authResolveSession();
+      if (typeof authApplyPermissions === 'function') authApplyPermissions();
+    } catch (error) {
+      console.warn('Staff permissions could not be re-applied:', error.message);
+    }
+  }
+
   /* --------------------- Postgres-backed store boot --------------------- */
+
+  /* The till cannot open until the workspace has been fetched — that is
+     the deliberate trade for not keeping the shop in the browser. What it
+     must not do is leave a cashier watching a spinner with no idea whether
+     to wait or fetch the manager. Replace the boot splash with something
+     that says what is wrong and that it is still trying. */
+  function showBootProblem(attempt) {
+    try {
+      var splash = document.getElementById('srErpBootSplash');
+      if (!splash) return;
+      var offline = (typeof navigator !== 'undefined' && navigator.onLine === false);
+      splash.innerHTML =
+        '<div style="text-align:center;max-width:320px;color:#dbe6f7;'
+        + 'font:600 13px -apple-system,\'Segoe UI\',sans-serif;line-height:1.5">'
+        + '<div style="font-size:30px;margin-bottom:10px">' + (offline ? '\u26a0\ufe0f' : '\u23f3') + '</div>'
+        + (offline
+            ? 'Internet aloqasi yo\u2018q.<br>Kassa ma\u2019lumotlari bazada saqlanadi, '
+              + 'shuning uchun ulanmasdan ochib bo\u2018lmaydi.'
+            : 'Bazaga ulanib bo\u2018lmadi.')
+        + '<div style="margin-top:8px;color:#8ea0bd;font-weight:400">Qayta urinilmoqda\u2026 ('
+        + (attempt + 1) + ')</div>'
+        + '<button id="srErpRetry" style="margin-top:14px;padding:8px 16px;border:0;border-radius:9px;'
+        + 'background:linear-gradient(105deg,#6961fa,#3686ef);color:#fff;font-weight:700;'
+        + 'font-size:12px;cursor:pointer">Hozir qayta urinish</button></div>';
+      var retry = document.getElementById('srErpRetry');
+      if (retry) retry.onclick = function () { window.location.reload(); };
+    } catch (_) { /* the retry loop continues regardless */ }
+  }
 
   var rerenderTimer = null;
 
@@ -731,6 +877,22 @@
   function runDeferredScripts() {
     var blocks = document.querySelectorAll('script[type="text/sr-deferred"]');
     if (!blocks.length) return 0;
+    var failures = [];
+
+    /* A script that fails to PARSE does not throw to the caller: the
+       browser reports it as an uncaught error on window and moves on, so
+       the try/catch below never sees it and the module silently does not
+       run. Listening here is the only way to learn which one — and which
+       one it is matters, because these blocks are whole ERP features. */
+    var running = null;
+    function noteParseFailure(event) {
+      if (!running) return;
+      failures.push({ index: running.index, id: running.id, bytes: running.bytes,
+                      error: (event && event.message) || 'parse error',
+                      at: event ? (event.lineno + ':' + event.colno) : '?' });
+    }
+    window.addEventListener('error', noteParseFailure);
+
     for (var index = 0; index < blocks.length; index += 1) {
       var inert = blocks[index];
       var live = document.createElement('script');
@@ -739,8 +901,31 @@
         if (attribute.name.toLowerCase() !== 'type') live.setAttribute(attribute.name, attribute.value);
       }
       live.text = inert.textContent;
-      // Replacing the node executes it synchronously, in order.
-      inert.parentNode.replaceChild(live, inert);
+      running = { index: index, id: inert.id || '(no id)', bytes: (inert.textContent || '').length };
+      /* Replacing the node executes it synchronously, in order.
+
+         Wrapped because these blocks used to run during parsing, where the
+         browser isolates them: one script throwing never stopped the next.
+         Running them from a loop removes that isolation, so without this a
+         single failure would leave the rest of the ERP inert — a blank
+         till from one bad module. Report which one and carry on. */
+      try {
+        inert.parentNode.replaceChild(live, inert);
+      } catch (error) {
+        failures.push({ index: index, id: inert.id || '(no id)', bytes: (inert.textContent || '').length,
+                        error: String(error && error.message || error) });
+        // Take the inert node out anyway so it cannot be run twice.
+        try { inert.parentNode.removeChild(inert); } catch (_) { /* ignore */ }
+      }
+      running = null;
+    }
+    window.removeEventListener('error', noteParseFailure);
+    if (failures.length) {
+      console.error('ERP modules that failed to run (' + failures.length + ' of '
+        + blocks.length + '):', JSON.stringify(failures));
+      // Also parked here: a console object is not readable from outside the
+      // page, and knowing WHICH module is dark is the whole point.
+      try { window.smartRetailErpModuleFailures = failures; } catch (_) { /* ignore */ }
     }
     /* Those blocks register ~53 DOMContentLoaded listeners and several
        load listeners. Both events fired long ago, while the blocks were
@@ -775,11 +960,19 @@
       })
       .then(function (count) {
         /* Only now is it safe to let the ERP run: every key it is about to
-           read is already in the store. */
+           read is already in the store — bar the deliberately deferred cell
+           map, which the store refuses to let anything write until it
+           arrives. */
         var executed = runDeferredScripts();
         /* These wrap functions the ERP itself defines, so the earlier
            attempt at DOMContentLoaded found nothing to wrap. */
         hookLogout();
+        var staffRole = (profile.workspace_owner || profile.erp_role === 'STAFF') ? 'STAFF' : 'OWNER';
+        if (staffRole === 'STAFF') {
+          restoreGrantedModules(staffRole, profile.username || '', session.user.id,
+            Array.isArray(profile.erp_modules) ? profile.erp_modules : []);
+          relaxStaffRoleGuards();
+        }
         if (!profile.workspace_owner && profile.erp_role !== 'STAFF') {
           try {
             var reconcile = hookEmployeeManagement();
@@ -793,11 +986,17 @@
         rerenderErp();
         tryUnlock();
         announce('online', 'Bazaga ulangan \u00b7 ' + count + ' kalit');
+        /* The rest of the workspace, now that the user has something to
+           look at. Not awaited: the till is already usable without it. */
+        store.loadDeferred().then(function (loaded) {
+          if (loaded) rerenderErp();
+        });
         return executed;
       })
       .catch(function (error) {
         console.warn('Workspace store unavailable:', error.message);
         announce('error', 'Bazadan yuklab bo\u2018lmadi \u2014 qayta urinilmoqda');
+        showBootProblem(attempt || 0);
         var wait = Math.min(30000, 3000 * Math.pow(2, Math.min(attempt || 0, 4)));
         return new Promise(function (resolve) { window.setTimeout(resolve, wait); })
           .then(function () { return startWorkspaceStore(profile, session, (attempt || 0) + 1); });

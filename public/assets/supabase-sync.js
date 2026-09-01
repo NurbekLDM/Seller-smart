@@ -568,26 +568,16 @@
         restoreButton.textContent = 'Tiklash';
         restoreButton.style.cssText = 'padding:5px 10px;border:0;border-radius:7px;background:#2f855a;color:#fff;font-size:11px;font-weight:700;cursor:pointer';
 
-        /* DISABLED under the store until restore_workspace_kv_version is
-           made safe for live terminals.
-
-           It deletes every row and re-inserts them, and Realtime broadcasts
-           that intermediate empty state to every connected terminal. Each
-           one drops the keys from memory, the ERP then reads a missing key,
-           finds nothing, and writes an empty array back — so a restore
-           DESTROYS the workspace instead of repairing it. Measured on
-           2026-09-01: restoring a 39-key version emptied srerp_cells
-           (6 249 rows) within seconds.
-
-           Listing and creating backups are unaffected and stay available;
-           only the one destructive action is withheld. */
-        if (STORE_MODE) {
-          restoreButton.disabled = true;
-          restoreButton.title = 'Vaqtincha o‘chirilgan — tiklash tuzatilmoqda';
-          restoreButton.style.cssText += ';opacity:.45;cursor:not-allowed';
-        }
+        /* Re-enabled once restore_workspace_kv_version stopped deleting
+           every row before re-inserting it. That intermediate empty state
+           was broadcast to every connected till, which then wrote empty
+           arrays over the restore — see
+           supabase/2026-09-01-workspace-kv-restore-fix.sql. It now applies
+           the difference in place, so terminals only ever see ordinary
+           updates. The page still reloads afterwards: the ERP holds its own
+           copies of these stores in module variables, and a restore can
+           change all of them at once. */
         restoreButton.onclick = async function () {
-          if (STORE_MODE) return;
           if (!window.confirm('Bazani "' + name + '" (' + detail + ') holatiga qaytarasizmi?\nHozirgi holat avtomatik backup sifatida saqlanadi.')) return;
           restoreButton.disabled = true;
           var restored = await client().rpc(versionRpc().restore, { history_id: row.id });
