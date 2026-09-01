@@ -35,6 +35,16 @@
 
   if (!/^https?:$/.test(window.location.protocol)) return;
 
+  /* THE switch for the whole Postgres-backed data layer.
+
+     It lives here, in the one file every page loads, because three
+     separate things have to agree on it and must never drift apart:
+     erp-page.js and supabase-sync.js decide which engine to run, and
+     scripts/build.mjs greps this very line to decide whether to mark the
+     ERP's inline scripts inert. A build that defers those scripts while
+     the runtime declines to execute them produces a blank till. */
+  var STORE_ENABLED = false;
+
   var TABLE = 'workspace_kv';
   var OUTBOX_KEY = 'sr-kv-outbox';
   var WRITE_DEBOUNCE_MS = 400;
@@ -82,6 +92,14 @@
   var retryDelay = RETRY_BASE_MS;
   var subscribers = new Set();
   var channel = null;
+  var excluded = [];   // keys this page never needs and must not download
+
+  /* Resolves the first time the workspace has been fetched. Anything that
+     must not run against an empty store waits on this — the platform's ERP
+     iframe above all, since it boots the whole ERP the moment its srcdoc
+     is assigned. */
+  var announceReady;
+  var readyPromise = new Promise(function (resolve) { announceReady = resolve; });
 
   function announce(state, label) {
     subscribers.forEach(function (subscriber) {
@@ -187,9 +205,15 @@
     // PostgREST caps a response; page through so a big workspace (the
     // 6 249-row cell map lives in one of these values) arrives complete.
     for (;;) {
-      var page = await client.from(TABLE)
+      var query = client.from(TABLE)
         .select('key, value')
-        .eq('workspace_id', workspaceId)
+        .eq('workspace_id', workspaceId);
+      /* Excluded server-side, not filtered after the fact: the whole point
+         is not to transfer the bytes. The till excludes the owner's
+         analytics state this way — 2.37 MB of the workspace's 3.7 MB that
+         no ERP screen ever reads. */
+      excluded.forEach(function (key) { query = query.neq('key', key); });
+      var page = await query
         .range(from, from + PAGE - 1);
       if (page.error) throw decorate(page.error);
       rows = rows.concat(page.data || []);
@@ -230,6 +254,7 @@
     }
 
     hydrated = true;
+    announceReady();
     return memory.size;
   }
 
@@ -251,6 +276,9 @@
         var row = payload.new && payload.new.key ? payload.new : payload.old;
         var key = row && row.key;
         if (!key) return;
+        // A key this page deliberately did not download must not arrive
+        // through the back door either.
+        if (excluded.indexOf(key) !== -1) return;
         // Belt and braces: RLS should already make this impossible.
         if (row.workspace_id && row.workspace_id !== workspaceId) return;
         /* This terminal's own unsent edit is newer than anything the
@@ -350,18 +378,33 @@
   /* --------------------------------- api -------------------------------- */
 
   window.smartRetailWorkspaceStore = {
+    /* Whether the Postgres data layer is live at all. See STORE_ENABLED. */
+    enabled: STORE_ENABLED,
+
     /* Install the shim as early as possible — before the ERP's own scripts
        parse — so no call site ever sees the real store. It starts empty;
        start() fills it. */
     install: install,
 
+    /* The Storage-shaped object itself, for a frame that needs it.
+
+       The platform runs the ERP inside a srcdoc iframe. That iframe is a
+       SEPARATE realm: defining window.localStorage in the parent does
+       nothing to it, so without this it would read and write the real
+       browser store and never touch the database at all. The parent
+       prepends a one-line bootstrap to the srcdoc that points the frame's
+       window.localStorage at this object — the frame then shares the
+       parent's already-hydrated memory and its write queue. */
+    shim: function () { return install(); },
+
     /* Bring the store up: hydrate from Postgres, replay the outbox, then
        subscribe for other terminals' changes. `onRemoteChange` is called
        with a key whenever another terminal changed it, so the caller can
        re-render. */
-    start: async function (supabaseClient, workspace, onRemoteChange) {
+    start: async function (supabaseClient, workspace, onRemoteChange, options) {
       client = supabaseClient;
       workspaceId = workspace;
+      excluded = (options && Array.isArray(options.exclude)) ? options.exclude.slice() : [];
       install();
       announce('syncing', 'Bazadan yuklanmoqda...');
       var count = await hydrate();
@@ -374,6 +417,8 @@
 
     flush: flush,
     hydrate: hydrate,
+    /* Resolves once the workspace has been fetched at least once. */
+    ready: function () { return readyPromise; },
     synced: synced,
     subscribe: function (callback) {
       if (typeof callback !== 'function') return function () {};

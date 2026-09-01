@@ -120,12 +120,25 @@
   // open request, so the app always boots against a clean database.
   function wipeLocalStorageSync() {
     try {
+      /* Clear this DEVICE. Once the workspace store is on,
+         window.localStorage is a shim over the shared database, so going
+         through it here would both miss the real browser's leftovers and
+         risk queueing a workspace-wide delete. The store's raw handle is
+         the genuine browser store; suspend() has already told the store to
+         forget the workspace itself. */
+      var device = (window.smartRetailWorkspaceStore && window.smartRetailWorkspaceStore.enabled)
+        ? window.smartRetailWorkspaceStore.raw
+        : {
+          removeItem: function (key) { localStorage.removeItem(key); },
+          key: function (index) { return localStorage.key(index); },
+          count: function () { return localStorage.length; }
+        };
       var doomed = [];
-      for (var index = 0; index < localStorage.length; index += 1) {
-        var key = localStorage.key(index);
+      for (var index = 0; index < device.count(); index += 1) {
+        var key = device.key(index);
         if (isWorkspaceKey(key)) doomed.push(key);
       }
-      doomed.forEach(function (key) { localStorage.removeItem(key); });
+      doomed.forEach(function (key) { device.removeItem(key); });
       var doomedSession = [];
       for (var position = 0; position < sessionStorage.length; position += 1) {
         var sessionKey = sessionStorage.key(position);

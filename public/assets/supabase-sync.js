@@ -84,6 +84,140 @@
 
   function client() { return window.smartRetailSupabase || null; }
 
+  /* ---------------------- Postgres-backed store path --------------------
+     When the store is on, everything below this line that belongs to the
+     snapshot engine stays inert: `active` is never set, so notify(),
+     flush() and the poll are all no-ops, and the two engines can never
+     both write. See STORE_ENABLED in workspace-store.js. */
+  var store = window.smartRetailWorkspaceStore || null;
+  var STORE_MODE = !!(store && store.enabled);
+
+  /* The platform hosts the ERP in a srcdoc iframe, and that iframe is a
+     SEPARATE realm: replacing window.localStorage here does nothing to it,
+     so the frame would read and write the real browser store and never
+     reach the database at all. Prepending this points the frame's
+     localStorage at THIS page's shim, so the frame shares the already
+     hydrated memory and the same write queue. */
+  var FRAME_BOOTSTRAP = '<script id="srStoreFrameBootstrap">(function(){try{'
+    + 'var s=parent.smartRetailWorkspaceStore;if(!s||!s.shim)return;var m=s.shim();'
+    + 'Object.defineProperty(window,"localStorage",{configurable:true,get:function(){return m;}});'
+    + '}catch(e){}})();<' + '/script>';
+
+  function bootstrapFrameHtml(html) {
+    if (typeof html !== 'string' || html.indexOf('srStoreFrameBootstrap') !== -1) return html;
+    var head = /<head[^>]*>/i.exec(html);
+    if (!head) return html;
+    var at = head.index + head[0].length;
+    return html.slice(0, at) + FRAME_BOOTSTRAP + html.slice(at);
+  }
+
+  /* Assigning srcdoc boots the entire ERP, so the frame must not be built
+     before the workspace has arrived: an ERP that boots against an empty
+     store caches empty arrays in its module variables and writes them back
+     over the real rows. Both of the page's own globals are wrapped. */
+  function guardErpFrame() {
+    if (typeof window.getSmartRetailErpHtml === 'function' && !window.getSmartRetailErpHtml.srStorePatched) {
+      var buildHtml = window.getSmartRetailErpHtml;
+      var withBootstrap = function () { return bootstrapFrameHtml(buildHtml.apply(this, arguments)); };
+      withBootstrap.srStorePatched = true;
+      window.getSmartRetailErpHtml = withBootstrap;
+    }
+    if (typeof window.initSmartRetailERP === 'function' && !window.initSmartRetailERP.srStoreGated) {
+      var openErp = window.initSmartRetailERP;
+      var gated = function guardedInitSmartRetailERP(forceReload) {
+        if (!store.status().hydrated) {
+          // Leave the existing spinner up and open as soon as we have data.
+          try {
+            var loading = document.getElementById('smartRetailErpLoading');
+            if (loading) loading.style.display = 'grid';
+          } catch (_) { /* the frame just opens a moment later */ }
+          store.ready().then(function () { guardedInitSmartRetailERP(forceReload); });
+          return;
+        }
+        return openErp.apply(this, arguments);
+      };
+      gated.srStoreGated = true;
+      window.initSmartRetailERP = gated;
+    }
+  }
+
+  /* The analytics module keeps its state in IndexedDB rather than
+     localStorage, so it is the one part of the workspace the shim cannot
+     capture by itself — it has to be read out of and written into the
+     store explicitly, exactly as the snapshot engine had to do. */
+  async function applyAnalytics(raw) {
+    if (typeof raw !== 'string' || typeof deepMerge !== 'function') return;
+    applying = true;
+    try {
+      state = deepMerge(DEFAULT_STATE, JSON.parse(raw));
+      if (typeof saveState === 'function') await saveState();
+      if (typeof rebuildAnalytics === 'function') rebuildAnalytics();
+      if (typeof renderAll === 'function') renderAll();
+    } catch (error) {
+      console.warn('Analytics state could not be applied:', error.message);
+    } finally { applying = false; }
+  }
+
+  function refreshErpFrame() {
+    var frame = document.getElementById('smartRetailErpFrame');
+    if (!frame || frame.dataset.loaded !== '1') return;
+    try {
+      if (frame.contentWindow && frame.contentWindow.renderAll) frame.contentWindow.renderAll();
+      if (frame.contentWindow && frame.contentWindow.crm21Refresh) frame.contentWindow.crm21Refresh();
+    } catch (_) { /* the frame can be reopened manually */ }
+  }
+
+  async function startStore(session, profile) {
+    var workspace = profile.workspace_owner || session.user.id;
+    store.install();
+    store.subscribe(function (state, label) { announce(state, label); });
+    // The page's globals exist by now (this file is injected before
+    // </body>), but re-run after DOM ready in case of a slow definition.
+    guardErpFrame();
+    document.addEventListener('DOMContentLoaded', guardErpFrame);
+
+    await store.start(client(), workspace, function (key) {
+      if (key === ANALYTICS_KEY) { applyAnalytics(localStorage.getItem(ANALYTICS_KEY)); return; }
+      refreshErpFrame();
+    });
+
+    await applyAnalytics(localStorage.getItem(ANALYTICS_KEY));
+
+    if (typeof saveState === 'function') {
+      var originalSave = saveState;
+      saveState = async function storeAwareSaveState() {
+        var output = await originalSave.apply(this, arguments);
+        // Skipped while applyAnalytics() is installing a value that came
+        // FROM the store — otherwise every remote update echoes back.
+        if (!applying && typeof cloneState === 'function') {
+          try { localStorage.setItem(ANALYTICS_KEY, JSON.stringify(cloneState())); } catch (_) { /* ignore */ }
+        }
+        return output;
+      };
+    }
+
+    guardErpFrame();
+
+    if (!profile.workspace_owner) {
+      try { initVersionPanel(); } catch (error) { console.warn('Version panel unavailable:', error.message); }
+      /* The snapshot engine took an automatic version inside every save.
+         Per-key writes have no such moment, so the client asks for one at
+         sign-in and hourly after that; snapshot_workspace_kv() keeps at
+         most one an hour and prunes to the newest 72, so an extra call
+         costs nothing. */
+      var takeVersion = function () {
+        client().rpc('snapshot_workspace_kv', { version_label: '' })
+          .then(function (result) {
+            if (result.error) console.warn('Automatic version failed:', result.error.message);
+          });
+      };
+      takeVersion();
+      window.setInterval(takeVersion, 3600000);
+    }
+
+    announce('online', 'Bazaga ulangan');
+  }
+
   /* Interface language belongs to the device, not the workspace. The i18n
      module writes it straight to localStorage — never through saveState()
      or db_set() — so the engine is never told it changed and never pushes
@@ -322,21 +456,36 @@
 
   window.smartRetailAnalyticsServerSync = {
     notify: notify,
-    flush: flush,
+    flush: function () { return STORE_MODE ? store.flush() : flush(); },
     subscribe: function (callback) {
       if (typeof callback !== 'function') return function () {};
       subscribers.add(callback);
-      callback(active ? 'online' : 'local', active ? 'Baza bilan ulangan · v' + revision : 'Bazaga ulanish tekshirilmoqda');
+      var live = STORE_MODE ? store.status().online : active;
+      callback(live ? 'online' : 'local',
+        live ? (STORE_MODE ? 'Baza bilan ulangan' : 'Baza bilan ulangan · v' + revision)
+             : 'Bazaga ulanish tekshirilmoqda');
       return function () { subscribers.delete(callback); };
     },
     // `pending` is true while this device holds changes the database has
     // not accepted yet — logout checks it before wiping local data.
-    status: function () { return { active: active, revision: revision, busy: busy, pending: pending }; },
+    status: function () {
+      if (STORE_MODE) {
+        var live = store.status();
+        // `pending` is what logout consults before it erases anything.
+        return { active: live.online, revision: 0, busy: live.flushing, pending: live.unsent > 0 };
+      }
+      return { active: active, revision: revision, busy: busy, pending: pending };
+    },
     /* Stop the engine for good. Logout calls this before erasing local
        data: every localStorage write now feeds the engine, so the wipe
        itself would otherwise be announced as a change and re-arm the
        unsent-work marker the logout just cleared. */
     suspend: function () {
+      /* Under the store this must FORGET, not merely pause. Logout calls
+         it immediately before wiping the browser, and window.localStorage
+         is a shim: a plain pause would leave the wipe queued in the outbox
+         and replay it as a workspace-wide delete at the next login. */
+      if (STORE_MODE) { store.forget(); return; }
       active = false;
       delayed = false;
       window.clearTimeout(timeout);
@@ -354,6 +503,20 @@
 
   /* Admin-only version panel: list automatic hourly snapshots and named
      backups, create a named backup, restore any of them. */
+  var VERSION_RPC = {
+    list: 'list_app_state_versions',
+    create: 'create_app_state_version',
+    restore: 'restore_app_state_version',
+    remove: 'delete_app_state_version'
+  };
+  var STORE_VERSION_RPC = {
+    list: 'list_workspace_kv_versions',
+    create: 'snapshot_workspace_kv',
+    restore: 'restore_workspace_kv_version',
+    remove: 'delete_workspace_kv_version'
+  };
+  function versionRpc() { return STORE_MODE ? STORE_VERSION_RPC : VERSION_RPC; }
+
   function initVersionPanel() {
     if (document.getElementById('srVersionPanelBtn')) return;
 
@@ -385,7 +548,7 @@
     async function refreshList() {
       var list = document.getElementById('srVersionList');
       list.textContent = 'Yuklanmoqda...';
-      var result = await client().rpc('list_app_state_versions');
+      var result = await client().rpc(versionRpc().list);
       if (result.error) { list.textContent = 'Xatolik: ' + result.error.message; return; }
       var rows = result.data || [];
       if (!rows.length) { list.textContent = 'Hali versiyalar yo‘q. Ma’lumot saqlanganda avtomatik paydo bo‘ladi.'; return; }
@@ -394,8 +557,10 @@
         var item = document.createElement('div');
         item.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid rgba(255,255,255,.1);border-radius:9px;background:rgba(255,255,255,.04)';
         var name = row.label ? row.label : 'avto-versiya';
+        // The snapshot engine numbered versions; the store counts keys.
+        var detail = row.version === undefined ? (row.keys + ' kalit') : ('v' + row.version);
         var info = document.createElement('div');
-        info.innerHTML = '<div style="font-weight:700">' + name.replace(/[<>&]/g, '') + ' · v' + row.version + '</div>' +
+        info.innerHTML = '<div style="font-weight:700">' + name.replace(/[<>&]/g, '') + ' · ' + detail + '</div>' +
           '<div style="color:#8ea0bd;font-size:11px">' + new Date(row.created_at).toLocaleString() + ' · ' + fmtSize(row.size_bytes) + '</div>';
         var actions = document.createElement('div');
         actions.style.cssText = 'display:flex;gap:6px;flex-shrink:0';
@@ -403,11 +568,13 @@
         restoreButton.textContent = 'Tiklash';
         restoreButton.style.cssText = 'padding:5px 10px;border:0;border-radius:7px;background:#2f855a;color:#fff;font-size:11px;font-weight:700;cursor:pointer';
         restoreButton.onclick = async function () {
-          if (!window.confirm('Bazani "' + name + '" (v' + row.version + ') holatiga qaytarasizmi?\nHozirgi holat avtomatik backup sifatida saqlanadi.')) return;
+          if (!window.confirm('Bazani "' + name + '" (' + detail + ') holatiga qaytarasizmi?\nHozirgi holat avtomatik backup sifatida saqlanadi.')) return;
           restoreButton.disabled = true;
-          var restored = await client().rpc('restore_app_state_version', { history_id: row.id });
+          var restored = await client().rpc(versionRpc().restore, { history_id: row.id });
           if (restored.error) { window.alert('Tiklab bo‘lmadi: ' + restored.error.message); restoreButton.disabled = false; return; }
-          try { await window.smartRetailAnalyticsServerSync.reload(); } catch (_) { /* reload below refreshes anyway */ }
+          if (!STORE_MODE) {
+            try { await window.smartRetailAnalyticsServerSync.reload(); } catch (_) { /* reload below refreshes anyway */ }
+          }
           window.location.reload();
         };
         actions.appendChild(restoreButton);
@@ -417,7 +584,7 @@
           deleteButton.style.cssText = 'padding:5px 10px;border:0;border-radius:7px;background:#823a3a;color:#fff;font-size:11px;font-weight:700;cursor:pointer';
           deleteButton.onclick = async function () {
             if (!window.confirm('"' + name + '" backupini o‘chirasizmi?')) return;
-            var removed = await client().rpc('delete_app_state_version', { history_id: row.id });
+            var removed = await client().rpc(versionRpc().remove, { history_id: row.id });
             if (removed.error) { window.alert('O‘chirib bo‘lmadi: ' + removed.error.message); return; }
             refreshList();
           };
@@ -437,7 +604,7 @@
     panel.querySelector('#srVersionClose').onclick = function () { panel.style.display = 'none'; };
     panel.querySelector('#srVersionCreate').onclick = async function () {
       var labelInput = document.getElementById('srVersionLabel');
-      var created = await client().rpc('create_app_state_version', { version_label: labelInput.value });
+      var created = await client().rpc(versionRpc().create, { version_label: labelInput.value });
       if (created.error) { window.alert('Saqlab bo‘lmadi: ' + created.error.message); return; }
       labelInput.value = '';
       refreshList();
@@ -465,6 +632,11 @@
         return;
       }
       var isOwner = !profile.workspace_owner;
+
+      if (STORE_MODE) {
+        await startStore(session, profile);
+        return;
+      }
 
       var data = await readServerState();
       var serverVersion = Number(data.version) || 0;

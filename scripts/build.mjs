@@ -44,6 +44,9 @@ if (!headMatch) throw new Error('HTML source is missing a <head> tag.');
 const headBlock = `\n${HEAD_BEGIN}\n` +
   '<script src="assets/app-config.js"></script>\n' +
   '<script src="assets/vendor/supabase.js"></script>\n' +
+  // Before supabase-sync.js (injected into the body) and before the ERP
+  // iframe is ever built, since that frame borrows this page's shim.
+  '<script src="assets/workspace-store.js"></script>\n' +
   '<script src="assets/auth-guard.js"></script>\n' +
   // assets/analytics-windows.js is deliberately NOT injected: opening
   // "Uzum Market Akademiyasi" / "PRO AI tahlil" in their own tab boots a
@@ -456,6 +459,18 @@ let erpHtml = erpDocument.erpHtml;
 
 const erpHeadMatch = erpHtml.match(/<head[^>]*>/i);
 if (!erpHeadMatch) throw new Error('ERP HTML is missing a <head> tag.');
+/* The single switch for the Postgres data layer, read from the one file
+   every page loads. erp-page.js and supabase-sync.js read the same value
+   at runtime, so the build and the runtime can never disagree about
+   whether the ERP's inline scripts are inert. */
+const storeEnabled = /\bvar STORE_ENABLED = true\b/.test(
+  readFileSync(resolve(root, 'public/assets/workspace-store.js'), 'utf8'));
+
+/* With the store on, the till cannot show anything until the workspace has
+   been fetched, so the splash's give-up timer has to outlast a slow first
+   load rather than uncovering a half-built page behind it. */
+const splashFallbackMs = storeEnabled ? 45000 : 8000;
+
 const erpBlock = '\n<!-- SR_ERP_PAGE_BEGIN -->\n' +
   '<script src="assets/app-config.js"></script>\n' +
   '<script src="assets/vendor/supabase.js"></script>\n' +
@@ -476,11 +491,68 @@ const erpBlock = '\n<!-- SR_ERP_PAGE_BEGIN -->\n' +
   'function unlocked(){return document.body&&!document.body.classList.contains("auth-locked");}' +
   'var poll=setInterval(function(){if(unlocked()){gone();clearInterval(poll);}},120);' +
   'setTimeout(function(){clearInterval(poll);gone();var hide=document.getElementById("srBootAuthHide");' +
-  'if(hide&&document.body&&document.body.classList.contains("auth-locked"))hide.parentNode.removeChild(hide);},8000);' +
+  'if(hide&&document.body&&document.body.classList.contains("auth-locked"))hide.parentNode.removeChild(hide);},' + splashFallbackMs + ');' +
   '})();<\/script>\n' +
   '<!-- SR_ERP_PAGE_END -->\n';
 const erpHeadIndex = erpHeadMatch.index + erpHeadMatch[0].length;
 erpHtml = erpHtml.slice(0, erpHeadIndex) + erpBlock + erpHtml.slice(erpHeadIndex);
+
+/* Boot order for the Postgres-backed store.
+
+   The ERP's own inline scripts must not run before the store has been
+   filled from the database. Left to boot against an empty store they
+   cache empty arrays in their module-level variables and then write those
+   straight back, destroying the real rows — on 2026-09-01 that emptied
+   srerp_cells (6 249 rows), srerp_products and srerp_receipts_v13.
+   Hydrating afterwards cannot repair it: by then the ERP is already
+   holding the empty copies.
+
+   So mark those blocks inert at build time; erp-page.js re-runs them, in
+   document order, once the store is ready.
+
+   Gated on the store actually being enabled, and read out of erp-page.js
+   so there is ONE switch rather than two that can drift apart. */
+/* Walks the document tag by tag and steps over each script's body, so a
+   literal "<script" inside a JS string (the receipt printer builds popup
+   documents that way) is never mistaken for a tag. */
+function deferInlineScripts(html, startIndex) {
+  let output = html.slice(0, startIndex);
+  let cursor = startIndex;
+  let deferred = 0;
+  for (;;) {
+    const open = html.indexOf('<script', cursor);
+    if (open === -1) { output += html.slice(cursor); break; }
+    const tagEnd = html.indexOf('>', open);
+    if (tagEnd === -1) { output += html.slice(cursor); break; }
+    const tag = html.slice(open, tagEnd + 1);
+    const close = html.indexOf('</script', tagEnd + 1);
+    const bodyEnd = close === -1 ? html.length : close;
+    output += html.slice(cursor, open);
+    if (/\bsrc=/i.test(tag)) {
+      output += tag; // external libraries still load during parsing
+    } else {
+      output += tag.replace(/^<script/i, '<script type="text/sr-deferred"');
+      deferred += 1;
+    }
+    output += html.slice(tagEnd + 1, bodyEnd);
+    cursor = bodyEnd;
+  }
+  return { html: output, deferred };
+}
+
+let deferredErpScripts = 0;
+if (storeEnabled) {
+  const marker = '<!-- SR_ERP_PAGE_END -->';
+  const boundary = erpHtml.indexOf(marker);
+  if (boundary === -1) throw new Error('ERP HTML is missing the injected block end marker.');
+  // Everything before the marker is this build's own boot code and must
+  // keep running immediately.
+  const result = deferInlineScripts(erpHtml, boundary + marker.length);
+  erpHtml = result.html;
+  deferredErpScripts = result.deferred;
+  if (!deferredErpScripts) throw new Error('Store boot is enabled but no ERP script was deferred.');
+}
+
 writeFileSync(erpOutputFile, erpHtml);
 
 // version.json: a tiny marker version-check.js polls so a tab left open
@@ -495,6 +567,9 @@ console.log(JSON.stringify({
   bytes: Buffer.byteLength(html),
   erpPageBytes: Buffer.byteLength(erpHtml),
   erpModules: erpDocument.modules.length,
+  storeEnabled,
+  deferredErpScripts,
+  splashFallbackMs,
   fileUploadGuard: fileGuard.state,
   i18nUnified: true,
   buildVersion,

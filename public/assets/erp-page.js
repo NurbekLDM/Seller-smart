@@ -40,21 +40,27 @@
      store is about to replace window.localStorage with a shim and this
      answer must come from the real one. */
   var store = window.smartRetailWorkspaceStore || null;
-  var KV_MODE = (function () {
-    try {
-      var chosen = /[?&]kv=([01])/.exec(window.location.search);
-      if (chosen) {
-        localStorage.setItem('sr-kv-mode', chosen[1]);
-        return chosen[1] === '1';
-      }
-      return localStorage.getItem('sr-kv-mode') === '1';
-    } catch (_) { return false; }
-  })();
-  if (KV_MODE && !store) {
-    // Fail closed onto the old path rather than running with no data layer.
-    console.error('Workspace store script is missing — falling back to the snapshot engine.');
-    KV_MODE = false;
-  }
+
+  /* Whether the Postgres data layer is live. The switch itself lives in
+     workspace-store.js (see STORE_ENABLED there) because build.mjs reads
+     it from that file to decide whether to mark the ERP's inline scripts
+     inert — a build that defers them while this file declines to execute
+     them would produce a blank till.
+
+     This is deliberately NOT a per-terminal choice any more. Once the
+     build defers those scripts, a terminal that opted out would simply
+     never run them.
+
+     History, because it constrains the design: the first attempt installed
+     the shim before the ERP's scripts parsed but hydrated afterwards. The
+     ERP therefore booted against an EMPTY store, cached empty arrays in
+     its module-level variables, and wrote them straight back — emptying
+     srerp_cells (6 249 rows), srerp_products and srerp_receipts_v13 in the
+     live workspace. Discarding the pre-hydration write queue does not fix
+     it: those writes arrive AFTER hydration and are indistinguishable from
+     real edits. Nothing downstream of that ordering is safe, so the ERP's
+     scripts now do not run at all until the store is full. */
+  var KV_MODE = !!(store && store.enabled);
 
   function setAuthCookie(token, maxAgeSeconds) {
     var parts = [
@@ -718,6 +724,33 @@
 
   var rerenderTimer = null;
 
+  /* Run the ERP's own scripts, which build.mjs marked inert so they could
+     not boot against an empty store. Document order is preserved and each
+     block is re-inserted as a real script element, so it still evaluates
+     in global scope exactly as it would have during parsing. */
+  function runDeferredScripts() {
+    var blocks = document.querySelectorAll('script[type="text/sr-deferred"]');
+    if (!blocks.length) return 0;
+    for (var index = 0; index < blocks.length; index += 1) {
+      var inert = blocks[index];
+      var live = document.createElement('script');
+      for (var position = 0; position < inert.attributes.length; position += 1) {
+        var attribute = inert.attributes[position];
+        if (attribute.name.toLowerCase() !== 'type') live.setAttribute(attribute.name, attribute.value);
+      }
+      live.text = inert.textContent;
+      // Replacing the node executes it synchronously, in order.
+      inert.parentNode.replaceChild(live, inert);
+    }
+    /* Those blocks register ~53 DOMContentLoaded listeners and several
+       load listeners. Both events fired long ago, while the blocks were
+       still inert, so every one of them would otherwise never be called.
+       Re-dispatch now that the listeners actually exist. */
+    try { document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true })); } catch (_) { /* ignore */ }
+    try { window.dispatchEvent(new Event('load')); } catch (_) { /* ignore */ }
+    return blocks.length;
+  }
+
   function rerenderErp() {
     try { if (typeof renderAll === 'function') renderAll(); } catch (_) { /* best effort */ }
     try { if (typeof crm21Refresh === 'function') crm21Refresh(); } catch (_) { /* ignore */ }
@@ -738,12 +771,29 @@
           // rows should cost one re-render, not one per row.
           window.clearTimeout(rerenderTimer);
           rerenderTimer = window.setTimeout(rerenderErp, 150);
-        });
+        }, { exclude: [ANALYTICS_KEY] });
       })
       .then(function (count) {
+        /* Only now is it safe to let the ERP run: every key it is about to
+           read is already in the store. */
+        var executed = runDeferredScripts();
+        /* These wrap functions the ERP itself defines, so the earlier
+           attempt at DOMContentLoaded found nothing to wrap. */
+        hookLogout();
+        if (!profile.workspace_owner && profile.erp_role !== 'STAFF') {
+          try {
+            var reconcile = hookEmployeeManagement();
+            if (typeof reconcile === 'function') {
+              Promise.resolve(reconcile()).catch(function (error) {
+                console.warn('Employee reconcile unavailable:', error.message);
+              });
+            }
+          } catch (error) { console.warn('Employee management unavailable:', error.message); }
+        }
         rerenderErp();
         tryUnlock();
         announce('online', 'Bazaga ulangan \u00b7 ' + count + ' kalit');
+        return executed;
       })
       .catch(function (error) {
         console.warn('Workspace store unavailable:', error.message);
