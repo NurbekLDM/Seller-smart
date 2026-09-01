@@ -516,7 +516,31 @@
       announce(dirty.size ? 'syncing' : 'online', dirty.size ? 'Saqlanmoqda...' : 'Saqlandi');
     } catch (error) {
       var message = String(error.message || '');
-      if (error.code === '42501' || message.indexOf('forbidden') !== -1) {
+
+      /* The database refused to turn a populated list into an empty one —
+         see supabase/2026-09-01-workspace-kv-wipe-guard.sql. That means
+         this terminal's copy of the key is wrong, not that the shop meant
+         to erase it. Retrying would only send the same emptiness again, so
+         drop the write, forget the bad copy and re-read that one key. The
+         rest of the batch still goes on the next pass.
+
+         A genuine clear does not come through here: it goes through
+         clear_workspace_list(), which says so explicitly. */
+      if (message.indexOf('list_wipe_refused') !== -1) {
+        var refused = /list_wipe_refused: (srerp_[A-Za-z0-9_-]+)/.exec(message);
+        var badKey = refused ? refused[1] : null;
+        console.error('Workspace store: the database refused to empty '
+          + (badKey || 'a list') + ' — this terminal had the wrong copy. Re-reading.');
+        announce('error', 'Ma’lumot yangilanmoqda');
+        if (badKey) {
+          dirty.delete(badKey);
+          memory.delete(badKey);
+          refreshKey(badKey);
+        } else {
+          resync();
+        }
+        delayed = true;   // whatever else was queued still needs sending
+      } else if (error.code === '42501' || message.indexOf('forbidden') !== -1) {
         // RLS refused. Retrying cannot help; keep the data queued so it is
         // still recoverable, and say so rather than looping silently.
         online = false;
