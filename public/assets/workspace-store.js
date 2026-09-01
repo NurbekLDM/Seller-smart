@@ -425,7 +425,19 @@
 
   /* ------------------------------ hydration ----------------------------- */
 
-  async function hydrate() {
+  /* `trusted` says whether the result may be believed about ABSENCE.
+
+     A normal boot, or a re-read prompted by one missing key, tells the
+     truth: whatever did not come back is genuinely gone, and `seen` is
+     rebuilt from it — otherwise a key that really was deleted could never
+     be created again on this terminal without a reload.
+
+     A re-read prompted by a burst of DELETEs is different: it may well
+     land in the middle of a bulk operation and see a workspace that is
+     briefly empty. Believing that would hand the ERP a blank slate to
+     write empty arrays over, which is the exact failure this guard
+     exists to stop, so `seen` is left alone. */
+  async function hydrate(trusted) {
     var rows = [];
     var from = 0;
     var PAGE = 500;
@@ -484,7 +496,11 @@
       });
     }
 
-    memory.forEach(function (_value, key) { seen.add(key); });
+    if (trusted === false) {
+      memory.forEach(function (_value, key) { seen.add(key); });
+    } else {
+      seen = new Set(memory.keys());
+    }
     hydrated = true;
     announceReady();
     return memory.size;
@@ -494,11 +510,11 @@
      Used by the stale-view guard and by the bulk-delete detector; both mean
      "this terminal's view can no longer be trusted". */
   var resyncing = false;
-  function resync() {
+  function resync(trusted) {
     if (resyncing || !online) return;
     resyncing = true;
     Promise.resolve()
-      .then(function () { return hydrate(); })
+      .then(function () { return hydrate(trusted); })
       .then(function () {
         announce('online', 'Bazadan qayta yuklandi');
         if (typeof onRemote === 'function') onRemote(null);
@@ -547,7 +563,7 @@
           recentDeletes.push(now);
           if (recentDeletes.length > 3) {
             recentDeletes = [];
-            resync();
+            resync(false);   // may be mid-bulk-operation: do not trust absence
             return;
           }
           if (!memory.has(key)) return;
