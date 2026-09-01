@@ -41,6 +41,27 @@
      table, read by the screens that use it. That is a change to the WMS
      code, not a flag. */
   var CELLS_KEY = 'srerp_cells';
+
+  /* Sections a staff account must never hold, whatever the owner ticked.
+
+     The Employees screen creates accounts, lists everyone else's and edits
+     their permissions. That is the owner's authority over other people, not
+     a module of the shop, so it is removed from a staff grant rather than
+     left to the owner to remember.
+
+     The server already refuses staff there — api/staff.js rejects any
+     caller whose profile has a workspace_owner — so this is not what makes
+     it safe. It is what stops a staff member seeing a screen listing their
+     colleagues, and stops the half-working state where the Employees
+     screen appears but the real bridge (owner-only) is not behind it, so
+     anything "created" lives in that browser and can never log in. */
+  var OWNER_ONLY_MODULES = ['employees'];
+
+  function staffModules(modules) {
+    var granted = Array.isArray(modules) ? modules : [];
+    var allowed = granted.filter(function (id) { return OWNER_ONLY_MODULES.indexOf(id) === -1; });
+    return allowed.length ? allowed : ['pos'];
+  }
   // How long logout waits for the final sync push before giving up on it.
   var LOGOUT_FLUSH_MS = 8000;
   var signingOut = false;
@@ -180,7 +201,7 @@
       }));
       var isStaff = role === 'STAFF';
       var entryId = isStaff ? 'AUTH-STAFF-' + String(uid || '').replace(/-/g, '').slice(0, 10) : 'AUTH-ROOT-ADMIN';
-      var permissions = isStaff ? (Array.isArray(modules) && modules.length ? modules : ['pos']) : ['*'];
+      var permissions = isStaff ? staffModules(modules) : ['*'];
       var landing = isStaff ? permissions[0] : 'ceo';
       var users;
       try { users = JSON.parse(localStorage.getItem('srerp_auth_users_v6') || '[]'); } catch (_) { users = []; }
@@ -799,7 +820,7 @@
          document is registered here, so a grant is never silently dropped
          because a module forgot to introduce itself. */
       if (typeof AUTH_V12_VIEWS !== 'undefined' && Array.isArray(AUTH_V12_VIEWS)) {
-        modules.forEach(function (id) {
+        staffModules(modules).forEach(function (id) {
           if (!id || AUTH_V12_VIEWS.some(function (view) { return view && view.id === id; })) return;
           var exists = document.getElementById('view-' + id)
             || document.querySelector('[data-view="' + id + '"]')
