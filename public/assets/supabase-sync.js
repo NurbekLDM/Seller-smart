@@ -123,6 +123,21 @@
     if (typeof html !== 'string' || html.indexOf('srStoreFrameBootstrap') !== -1) return html;
     var head = /<head[^>]*>/i.exec(html);
     if (!head) return html;
+
+    /* Retire the ERP's own VPS-era sync engine before this copy runs.
+
+       crm21ServerSync reads every srerp_* key, pushes them to /api/v1 -
+       gone, so it 404s on every load - and on a pull writes and REMOVES
+       keys through localStorage, which in this frame is the shim: it would
+       be writing and deleting in the database, alongside the store.
+
+       scripts/build.mjs disables it in public/erp.html, but this copy is
+       decoded from base64 at run time and never passes through the build,
+       so it has to be disabled here. A type nothing executes, rather than
+       a deletion, so the block is one word from coming back. */
+    html = html.replace(/<script(\s+id="crm21ServerSync")/i,
+      '<script type="text/sr-disabled"$1');
+
     var at = head.index + head[0].length;
     return html.slice(0, at) + FRAME_BOOTSTRAP + html.slice(at);
   }
