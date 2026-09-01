@@ -149,10 +149,19 @@
   /* Whether this database has the revisions migration. Flipped off by the
      first flush that finds save_workspace_kv missing. */
   var conditionalWrites = true;
-  /* Whether this database has save_workspace_kv_delta. Same fallback rule
-     as conditionalWrites: a missing migration must never stop a till from
-     saving, only make it send more bytes. */
-  var deltaWrites = true;
+  /* Delta writes are OFF.
+
+     They work on small lists and on a synthetic 6 249-element list, and
+     they cut a one-cell edit from 1.27 MB to 300 bytes. Against the real
+     srerp_cells value they emptied the row, twice, and the cause is not
+     yet understood — the same RPC, the same shape, the same element count,
+     a different outcome.
+
+     A saving that costs the warehouse map is not a saving. The path stays
+     in the code, tested and ready, but nothing takes it until the failure
+     is explained and reproduced on data that is not a shop's. Whole values
+     are what ships. */
+  var deltaWrites = false;
 
   // Remote DELETEs arriving in a burst: a bulk server-side operation, not
   // the app deleting keys. See the realtime handler.
