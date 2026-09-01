@@ -371,8 +371,21 @@
     var upserts = [];
     var deletes = [];
     batch.forEach(function (op, key) {
-      if (op === 'delete') deletes.push(key);
-      else upserts.push({ workspace_id: workspaceId, key: key, value: memory.get(key) });
+      if (op === 'delete') { deletes.push(key); return; }
+      var value = memory.get(key);
+      /* Never send anything but the string the app wrote. If the store's
+         copy of a key is not a string then something upstream corrupted it,
+         and persisting that would push the corruption to every terminal.
+         Drop the write and re-read instead. */
+      if (typeof value !== 'string') {
+        console.error('Workspace store: refusing to save ' + key + ' — local copy is '
+          + (value === undefined ? 'missing' : typeof value) + '. Re-reading.');
+        dirty.delete(key);
+        memory.delete(key);
+        refreshKey(key);
+        return;
+      }
+      upserts.push({ workspace_id: workspaceId, key: key, value: value });
     });
     announce('syncing', 'Saqlanmoqda...');
     try {
@@ -767,6 +780,30 @@
     }
   }
 
+  /* Pull one key's current value. Used when a change notification arrives
+     without a usable value in it — see the realtime handler. */
+  async function refreshKey(key) {
+    if (!online || dirty.has(key)) return;
+    try {
+      var row = await client.from(TABLE)
+        .select('key, value, revision')
+        .eq('workspace_id', workspaceId)
+        .eq('key', key)
+        .maybeSingle();
+      if (row.error || !row.data) return;
+      if (dirty.has(key)) return;   // changed here while the fetch was out
+      var text = typeof row.data.value === 'string' ? row.data.value : null;
+      if (text === null) return;    // still not a string: leave what we have
+      base.set(key, { value: text, revision: Number(row.data.revision) || 1 });
+      if (memory.get(key) === text) return;
+      memory.set(key, text);
+      seen.add(key);
+      if (typeof onRemote === 'function') onRemote(key);
+    } catch (_) {
+      /* the reconciler will pick it up */
+    }
+  }
+
   /* ------------------------------ realtime ------------------------------ */
 
   function listen(onRemoteChange) {
@@ -812,8 +849,24 @@
           memory.delete(key);
           base.delete(key);
         } else {
-          var value = payload.new ? payload.new.value : null;
-          var next = typeof value === 'string' ? value : JSON.stringify(value);
+          var value = payload.new ? payload.new.value : undefined;
+
+          /* Realtime does not carry the row when it is too big: Supabase
+             caps a change payload at about 1 MB, and srerp_cells alone is
+             1.27 MB. What arrives then has no `value` at all, and the old
+             code ran it through JSON.stringify — which turns undefined into
+             the value undefined, not a string. That went straight into
+             memory, so every terminal watching lost its copy of the cell
+             map the moment another one edited a cell, and the ERP then
+             wrote the nothing it read back over the real rows.
+
+             A notification says the key changed. It is not a source of the
+             value. Anything that is not a string means fetch it. */
+          if (typeof value !== 'string') {
+            refreshKey(key);
+            return;
+          }
+          var next = value;
           // Keep the agreed state current even when the value is unchanged,
           // or the next write would be sent with a stale expected revision
           // and conflict for no reason.
