@@ -116,6 +116,24 @@
   var online = false;
   var flushing = false;
   var writeTimer = null;
+  /* Anything still queued gets another attempt on this interval, whatever
+     went wrong last time. Without it, work left over from a partial or
+     refused flush waits for the app to happen to write again. */
+  var FLUSH_RETRY_MS = 10000;
+  var retryPulse = null;
+
+  /* setTimeout leaves its handle behind after it fires, so a plain
+     `writeTimer = setTimeout(...)` makes `!writeTimer` false forever and
+     every "schedule one if none is pending" check silently does nothing.
+     Measured: after the database refused one write, the OTHER key in that
+     batch never went at all. */
+  function scheduleFlush(delayMs) {
+    window.clearTimeout(writeTimer);
+    writeTimer = window.setTimeout(function () {
+      writeTimer = null;
+      flush();
+    }, delayMs);
+  }
   var retryDelay = RETRY_BASE_MS;
   var subscribers = new Set();
   var channel = null;
@@ -149,6 +167,9 @@
   /* Whether this database has the revisions migration. Flipped off by the
      first flush that finds save_workspace_kv missing. */
   var conditionalWrites = true;
+  /* Set by forget(); cleared by start(). While true this terminal accepts
+     no writes at all - see queue(). */
+  var stopped = false;
   /* Delta writes are OFF.
 
      They work on small lists and on a synthetic 6 249-element list, and
@@ -364,11 +385,20 @@
   /* ------------------------------- writes ------------------------------- */
 
   function queue(key, op) {
+    /* forget() means this terminal has let the workspace go - a logout, or
+       a different account signing in. Anything the page writes afterwards
+       is teardown, not work: the ERP tearing its own state down, or a wipe
+       running through the shim. Queueing it re-arms the outbox that
+       forget() just cleared, and the next login replays it as a delete of
+       every key it names.
+
+       Measured: calling localStorage.clear() after suspend() queued a
+       delete for all 38 keys in the workspace. */
+    if (stopped) return;
     dirty.set(key, op);
     persistOutbox();
     if (!online) return;
-    window.clearTimeout(writeTimer);
-    writeTimer = window.setTimeout(flush, WRITE_DEBOUNCE_MS);
+    scheduleFlush(WRITE_DEBOUNCE_MS);
   }
 
   async function flush() {
@@ -498,8 +528,7 @@
           announce('syncing', 'Boshqa kassa bilan birlashtirilmoqda...');
           if (typeof onRemote === 'function') onRemote(null);
           // Retry promptly; a bounded backoff keeps a hot key from spinning.
-          window.clearTimeout(writeTimer);
-          writeTimer = window.setTimeout(flush, 250);
+          scheduleFlush(250);
         }
       }
       if (deletes.length) {
@@ -516,7 +545,31 @@
       announce(dirty.size ? 'syncing' : 'online', dirty.size ? 'Saqlanmoqda...' : 'Saqlandi');
     } catch (error) {
       var message = String(error.message || '');
-      if (error.code === '42501' || message.indexOf('forbidden') !== -1) {
+
+      /* The database refused to turn a populated list into an empty one —
+         see supabase/2026-09-01-workspace-kv-wipe-guard.sql. That means
+         this terminal's copy of the key is wrong, not that the shop meant
+         to erase it. Retrying would only send the same emptiness again, so
+         drop the write, forget the bad copy and re-read that one key. The
+         rest of the batch still goes on the next pass.
+
+         A genuine clear does not come through here: it goes through
+         clear_workspace_list(), which says so explicitly. */
+      if (message.indexOf('list_wipe_refused') !== -1) {
+        var refused = /list_wipe_refused: (srerp_[A-Za-z0-9_-]+)/.exec(message);
+        var badKey = refused ? refused[1] : null;
+        console.error('Workspace store: the database refused to empty '
+          + (badKey || 'a list') + ' — this terminal had the wrong copy. Re-reading.');
+        announce('error', 'Ma’lumot yangilanmoqda');
+        if (badKey) {
+          dirty.delete(badKey);
+          memory.delete(badKey);
+          refreshKey(badKey);
+        } else {
+          resync();
+        }
+        delayed = true;   // whatever else was queued still needs sending
+      } else if (error.code === '42501' || message.indexOf('forbidden') !== -1) {
         // RLS refused. Retrying cannot help; keep the data queued so it is
         // still recoverable, and say so rather than looping silently.
         online = false;
@@ -528,9 +581,7 @@
       }
     } finally {
       flushing = false;
-      if (online && dirty.size && !writeTimer) {
-        writeTimer = window.setTimeout(flush, WRITE_DEBOUNCE_MS);
-      }
+      if (online && dirty.size && !writeTimer) scheduleFlush(WRITE_DEBOUNCE_MS);
     }
   }
 
@@ -938,13 +989,29 @@
         seen.delete(key);
         queue(key, 'delete');
       },
+      /* Clears this DEVICE's view. It does not delete the workspace.
+
+         It used to queue a delete for every key, which is what
+         localStorage.clear() means when localStorage is the database — and
+         it reached straight into the write queue instead of going through
+         queue(), so the guard that stops writes after suspend() did not
+         apply to it. Measured during the logout test: 38 deletes queued
+         after the store had been told to stop, written to the outbox that
+         had just been cleared, ready to be replayed at the next sign-in.
+
+         Nothing in this application calls it. Every wipe that is meant —
+         logout, an account switch, the foreign-project fence — works on
+         the device through the store's raw handle, because erasing this
+         terminal has never meant erasing the shop. This now matches: the
+         local view goes, the workspace stays, and a shop is deleted only
+         by something that says so.
+
+         Non-synced keys (the auth token included) belong to the real
+         store and are left alone. */
       clear: function () {
-        memory.forEach(function (_value, key) { dirty.set(key, 'delete'); });
         memory.clear();
-        persistOutbox();
-        if (online) flush();
-        // Non-synced keys (auth token included) are the real store's
-        // business; clear() there is never what the ERP means.
+        seen.clear();
+        base.clear();
       },
       key: function (index) {
         var position = Number(index) || 0;
@@ -1019,6 +1086,7 @@
     start: async function (supabaseClient, workspace, onRemoteChange, options) {
       client = supabaseClient;
       workspaceId = workspace;
+      stopped = false;
       excluded = (options && Array.isArray(options.exclude)) ? options.exclude.slice() : [];
       deferred = (options && Array.isArray(options.defer)) ? options.defer.slice() : [];
       onRemote = onRemoteChange;
@@ -1029,6 +1097,10 @@
       listen(onRemoteChange);
       window.clearInterval(reconcileTimer);
       reconcileTimer = window.setInterval(reconcile, RECONCILE_MS);
+      window.clearInterval(retryPulse);
+      retryPulse = window.setInterval(function () {
+        if (online && dirty.size && !flushing) flush();
+      }, FLUSH_RETRY_MS);
       if (dirty.size) flush();
       announce('online', 'Bazaga ulangan');
       return count;
@@ -1079,6 +1151,11 @@
        terminal, so a wipe is never mistaken for the user deleting their
        workspace and pushed to the database. */
     suspend: function () {
+      /* Same rule as forget(): once a terminal has been told to stop, it
+         accepts no further writes. The logout path calls suspend() first
+         and forget() a few lines later, and whatever runs in between is
+         teardown - it must not end up in the outbox. */
+      stopped = true;
       online = false;
       window.clearTimeout(writeTimer);
       writeTimer = null;
@@ -1098,11 +1175,14 @@
        shop. Anything that means "this terminal should stop holding the
        previous session's data" must call this instead. */
     forget: function () {
+      stopped = true;
       online = false;
       window.clearTimeout(writeTimer);
       writeTimer = null;
       window.clearInterval(reconcileTimer);
       reconcileTimer = null;
+      window.clearInterval(retryPulse);
+      retryPulse = null;
       dirty.clear();
       memory.clear();
       seen.clear();
