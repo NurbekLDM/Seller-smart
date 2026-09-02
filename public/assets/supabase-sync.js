@@ -91,6 +91,8 @@
      both write. See STORE_ENABLED in workspace-store.js. */
   var store = window.smartRetailWorkspaceStore || null;
   var STORE_MODE = !!(store && store.enabled);
+  // Snapshot mode never hydrates the store: let the ERP frame build now.
+  if (!STORE_MODE && window.smartRetailErpFrameHold) window.smartRetailErpFrameHold.release();
 
   /* The ERP document is opened two ways from this page: in the srcdoc
      iframe, and in its own window from a blob URL ("Yangi oynada ochish").
@@ -183,7 +185,11 @@
       state = deepMerge(DEFAULT_STATE, JSON.parse(raw));
       if (typeof saveState === 'function') await saveState();
       if (typeof rebuildAnalytics === 'function') rebuildAnalytics();
-      if (typeof renderAll === 'function') renderAll();
+      // The open section now, the other 24 in idle slots (~2s of render
+      // work off the critical path). Falls back to renderAll() on a
+      // vendor build without the helper.
+      if (typeof window.srRenderAllDeferred === 'function') window.srRenderAllDeferred(location.hash.slice(1) || 'dashboard', false);
+      else if (typeof renderAll === 'function') renderAll();
     } catch (error) {
       console.warn('Analytics state could not be applied:', error.message);
     } finally { applying = false; }
@@ -209,6 +215,11 @@
      workspace has arrived. The srcdoc attribute is the definitive signal
      (the frame document may still be parsing). */
   function repairUnboundErpFrame() {
+    /* Preferred path: auth-guard.js swallowed the premature srcdoc
+       assignment (see holdErpFrameUntilStore there); releasing the hold
+       builds the frame once, now that the store has data. */
+    var hold = window.smartRetailErpFrameHold;
+    if (hold && hold.active) { hold.release(); return true; }
     var frame = document.getElementById('smartRetailErpFrame');
     if (!frame || frame.dataset.loaded !== '1') return false;
     var html = frame.getAttribute('srcdoc') || '';

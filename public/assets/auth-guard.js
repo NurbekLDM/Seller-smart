@@ -481,6 +481,55 @@
      invisible while locked (the session is seeded, so it unlocks moments
      later); a 5s fallback reveals the login if unlocking ever fails. */
 
+
+  /* ---- Hold the embedded ERP frame until the workspace has arrived ------
+     The app's inline init() opens "#retailerp" while the page is still
+     parsing, which assigns the 2.3 MB ERP document to the iframe's srcdoc
+     before supabase-sync.js exists — that copy boots on the browser's real,
+     empty localStorage (0 products) and is thrown away and rebuilt once the
+     store is hydrated: two full ERP boots, ~7s each, on the main thread.
+     Swallow that first assignment instead. supabase-sync.js releases the
+     hold and builds the frame properly (with the store bootstrap) as soon
+     as the workspace is hydrated; a safety timer releases it regardless,
+     so a store that never starts still ends with a working ERP. Only the
+     Postgres-backed store mode holds — the snapshot engine hydrates the
+     real localStorage, which the frame reads directly. */
+  (function holdErpFrameUntilStore() {
+    var store = window.smartRetailWorkspaceStore;
+    if (!store || !store.enabled || onLoginPage) return;
+    var proto = window.HTMLIFrameElement && window.HTMLIFrameElement.prototype;
+    var desc = proto && Object.getOwnPropertyDescriptor(proto, 'srcdoc');
+    if (!desc || typeof desc.set !== 'function' || typeof desc.get !== 'function') return;
+    var held = null;
+    var hold = { active: true };
+    Object.defineProperty(proto, 'srcdoc', {
+      configurable: true,
+      enumerable: desc.enumerable,
+      get: function () { return desc.get.call(this); },
+      set: function (value) {
+        if (hold.active && this.id === 'smartRetailErpFrame') { held = this; this.dataset.srHeld = '1'; return; }
+        desc.set.call(this, value);
+      }
+    });
+    hold.release = function () {
+      if (!hold.active) return false;
+      hold.active = false;
+      var frame = held || document.getElementById('smartRetailErpFrame');
+      held = null;
+      if (!frame || frame.dataset.srHeld !== '1') return false;
+      delete frame.dataset.srHeld;
+      try {
+        frame.dataset.loaded = '0';
+        if (typeof window.initSmartRetailERP === 'function') window.initSmartRetailERP(true);
+      } catch (error) { console.warn('ERP frame could not be rebuilt:', error.message); }
+      return true;
+    };
+    window.setTimeout(function () {
+      if (hold.active) { console.warn('Workspace store did not report in time — opening the ERP anyway.'); hold.release(); }
+    }, 60000);
+    window.smartRetailErpFrameHold = hold;
+  })();
+
   var erpWrappedSource = null;
   var erpWrappedOutput = null;
   function withBootAuthHide(html) {

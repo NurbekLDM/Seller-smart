@@ -431,6 +431,40 @@ const POPUP_STANDALONE = `function openSmartRetailERPWindow(){
 
 html = mustReplaceOnce(html, POPUP_ANCHOR, POPUP_STANDALONE, 'erp popup standalone');
 
+/* ---- First paint: render the open section, defer the other 24 ----------
+   The app's inline init() calls renderAll() — all 25 analytics sections,
+   ~45,000 DOM nodes, about 2s on a fast desktop — before the page is
+   usable, and then setView(hash) renders the open section a second time.
+   Only the section being looked at is needed for first paint; the rest
+   are drawn one per idle slot right after, in the same order renderAll()
+   used, so every section is still rendered and every side effect (badge
+   counts, settings inputs) still happens — just after the page is
+   interactive rather than before. supabase-sync.js reuses the helper for
+   its post-hydration re-render. */
+
+const INIT_RENDER_ANCHOR = `initMergedAuth();rebuildAnalytics();renderAll();const hash=location.hash.slice(1);if(hash&&titles[hash])setView(hash);
+}
+init();`;
+
+const INIT_RENDER_DEFERRED = `initMergedAuth();rebuildAnalytics();const hash=location.hash.slice(1);
+/* SR_DEFERRED_RENDER (build-time patch — scripts/build.mjs): first paint
+   draws only the open section; the rest follow in idle slots. */
+window.srRenderAllDeferred=function(current,skipCurrent){
+  const all=[['dashboard',renderDashboard],['import',renderImport],['sales',renderSales],['salesstatus',renderSalesStatus],['funnel',renderFunnel],['proai2',renderAiPro2],['unit',renderUnit],['niche',renderNiche],['commission',renderCommission],['promos',renderPromos],['competitors',renderCompetitors],['ranking',renderRanking],['reviews',renderReviews],['finance',renderFinance],['tax',renderTax],['cashflow',renderCashflow],['returns',renderReturns],['suppliers',renderSuppliers],['ai',renderAI],['notifications',renderNotifications],['stock',renderStock],['packaging',renderPackaging],['glossary',renderGlossary],['guide',renderGuide],['settings',renderSettings]];
+  if(!skipCurrent){try{renderView(current);}catch(e){console.warn('Render failed:',current,e);}}
+  const queue=all.filter(([name])=>name!==current);
+  const run=()=>{const next=queue.shift();if(!next)return;try{next[1]();}catch(e){console.warn('Deferred render failed:',next[0],e);}schedule();};
+  const schedule=()=>{if(typeof requestIdleCallback==='function')requestIdleCallback(run,{timeout:1000});else setTimeout(run,16);};
+  schedule();
+};
+const srView=(hash&&titles[hash])?hash:'dashboard';
+if(hash&&titles[hash])setView(hash);else renderView('dashboard');
+window.srRenderAllDeferred(srView,true);
+}
+init();`;
+
+html = mustReplaceOnce(html, INIT_RENDER_ANCHOR, INIT_RENDER_DEFERRED, 'deferred first render');
+
 writeFileSync(outputFile, html);
 
 // ---- standalone ERP page (public/erp.html) for ERP staff accounts ------

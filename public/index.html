@@ -3289,7 +3289,20 @@ function initMergedAuth(){mergedMigrateAdminPasswordV19();mergedMigrateUserClick
 async function init(){
  const embedded=$("#embeddedBackup");if(embedded.textContent.trim()){try{state=deepMerge(DEFAULT_STATE,embedded.dataset.encoding==="base64"?stateFromBase64(embedded.textContent):JSON.parse(embedded.textContent));await saveState()}catch(e){console.warn("Embedded backup invalid",e);await loadState()}}else await loadState();
  document.documentElement.dataset.theme=state.settings.theme||"dark";bind();document.getElementById('ai2RefreshBtn')?.addEventListener('click',()=>{renderAiPro2();toast('AI PRO 2.0 qayta tahlil qilindi')});document.getElementById('ai2ExportBtn')?.addEventListener('click',ai2Export);document.getElementById('ai2Search')?.addEventListener('input',debounce(ai2RenderTable,120));document.getElementById('ai2SegmentFilter')?.addEventListener('change',ai2RenderTable);document.getElementById('ai2AbcFilter')?.addEventListener('change',ai2RenderTable);document.getElementById('ai2Sort')?.addEventListener('change',ai2RenderTable);updateProAiFullscreenButton();
-initMergedAuth();rebuildAnalytics();renderAll();const hash=location.hash.slice(1);if(hash&&titles[hash])setView(hash);
+initMergedAuth();rebuildAnalytics();const hash=location.hash.slice(1);
+/* SR_DEFERRED_RENDER (build-time patch — scripts/build.mjs): first paint
+   draws only the open section; the rest follow in idle slots. */
+window.srRenderAllDeferred=function(current,skipCurrent){
+  const all=[['dashboard',renderDashboard],['import',renderImport],['sales',renderSales],['salesstatus',renderSalesStatus],['funnel',renderFunnel],['proai2',renderAiPro2],['unit',renderUnit],['niche',renderNiche],['commission',renderCommission],['promos',renderPromos],['competitors',renderCompetitors],['ranking',renderRanking],['reviews',renderReviews],['finance',renderFinance],['tax',renderTax],['cashflow',renderCashflow],['returns',renderReturns],['suppliers',renderSuppliers],['ai',renderAI],['notifications',renderNotifications],['stock',renderStock],['packaging',renderPackaging],['glossary',renderGlossary],['guide',renderGuide],['settings',renderSettings]];
+  if(!skipCurrent){try{renderView(current);}catch(e){console.warn('Render failed:',current,e);}}
+  const queue=all.filter(([name])=>name!==current);
+  const run=()=>{const next=queue.shift();if(!next)return;try{next[1]();}catch(e){console.warn('Deferred render failed:',next[0],e);}schedule();};
+  const schedule=()=>{if(typeof requestIdleCallback==='function')requestIdleCallback(run,{timeout:1000});else setTimeout(run,16);};
+  schedule();
+};
+const srView=(hash&&titles[hash])?hash:'dashboard';
+if(hash&&titles[hash])setView(hash);else renderView('dashboard');
+window.srRenderAllDeferred(srView,true);
 }
 init();
 </script>
