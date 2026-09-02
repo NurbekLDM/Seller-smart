@@ -527,7 +527,6 @@
     return output;
   }
 
-  var erpWindowBlobUrl = null;
   function installErpIntegration() {
     var originalGet = window.getSmartRetailErpHtml;
     if (typeof originalGet === 'function' && !originalGet.srWrapped) {
@@ -535,28 +534,25 @@
       wrappedGet.srWrapped = true;
       window.getSmartRetailErpHtml = wrappedGet;
     }
-    /* "Open in a new window" gives the ERP a tab with an EMPTY per-tab
-       sessionStorage, so it boots locked. Replace the opener with one that
-       authenticates the new tab right away; sessionStorage then survives
-       refreshes of that tab, so it stays unlocked. */
+    /* "Open in a new window": the vendor opened a blob: copy of the ERP that
+       borrowed THIS tab's in-memory workspace store through `opener`
+       (supabase-sync.js FRAME_BOOTSTRAP). Reload or close this tab and that
+       window lost its data source, and its writes never reached the
+       database on their own. The standalone /erp.html page has its own
+       session, its own database-backed store and full hydration
+       (erp-page.js), so the popup opens that instead. A named target
+       re-focuses the ERP window that is already open rather than opening
+       another copy. The vendor's own opener (patched the same way by
+       scripts/build.mjs) is kept only as the fallback marker. */
     var originalOpen = window.openSmartRetailERPWindow;
     if (typeof originalOpen === 'function' && !originalOpen.srWrapped) {
       var wrappedOpen = function () {
         try {
-          var url = URL.createObjectURL(new Blob([window.getSmartRetailErpHtml()], { type: 'text/html;charset=utf-8' }));
-          var opened = window.open(url, '_blank');
+          var opened = window.open('/erp.html', 'smartRetailErpWindow');
           if (opened) {
-            try {
-              opened.sessionStorage.setItem('srerp_auth_session_v6', 'AUTH-ROOT-ADMIN');
-              opened.sessionStorage.setItem(ERP_ACCESS_KEY, sessionStorage.getItem(ERP_ACCESS_KEY) || '');
-            } catch (_) { /* ignore */ }
-            // Keep the previous blob alive until a new window is opened, so
-            // refreshing the ERP window keeps working.
-            if (erpWindowBlobUrl) { try { URL.revokeObjectURL(erpWindowBlobUrl); } catch (_) { /* ignore */ } }
-            erpWindowBlobUrl = url;
-          } else {
-            try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
-            if (typeof toast === 'function') toast('Yangi oyna ochilmadi — brauzer bloklagan bo‘lishi mumkin');
+            try { opened.focus(); } catch (_) { /* ignore */ }
+          } else if (typeof toast === 'function') {
+            toast('Yangi oyna ochilmadi — brauzer bloklagan bo‘lishi mumkin');
           }
         } catch (error) {
           if (typeof toast === 'function') toast('ERP oynasini ochib bo‘lmadi');
