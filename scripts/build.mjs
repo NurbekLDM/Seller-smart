@@ -465,6 +465,28 @@ init();`;
 
 html = mustReplaceOnce(html, INIT_RENDER_ANCHOR, INIT_RENDER_DEFERRED, 'deferred first render');
 
+/* ---- Embedded ERP = the standalone page, not a srcdoc copy --------------
+   The vendor builds the embedded ERP by base64-decoding the 2.3 MB payload
+   plus 20 modules into one string and assigning it to srcdoc on every
+   open: measured on production the frame took ~10s to become interactive
+   inside the analytics page, against ~3.7s for the very same ERP served as
+   public/erp.html — which the browser also caches. The frame now simply
+   loads /erp.html: its own session, its own Postgres-backed store and
+   hydration (erp-page.js), identical to the "Yangi oynada ochish" window,
+   so the frame no longer depends on this page's store bootstrap at all.
+   Same origin, so the page's contentWindow.renderAll() refreshes and the
+   #topheader ready probe keep working. "Qayta yuklash" reloads the frame
+   document in place. */
+
+const FRAME_SRCDOC_ANCHOR = `    frame.srcdoc=getSmartRetailErpHtml();
+`;
+const FRAME_SRC_PAGE = `    /* SR_FRAME_SRC (build-time patch — scripts/build.mjs): the embedded
+       ERP is the standalone /erp.html page, not a base64-decoded srcdoc. */
+    if(frame.getAttribute('src')){frame.contentWindow.location.reload();}
+    else{frame.removeAttribute('srcdoc');frame.src='/erp.html';}
+`;
+html = mustReplaceOnce(html, FRAME_SRCDOC_ANCHOR, FRAME_SRC_PAGE, 'erp frame src page');
+
 writeFileSync(outputFile, html);
 
 // ---- standalone ERP page (public/erp.html) for ERP staff accounts ------

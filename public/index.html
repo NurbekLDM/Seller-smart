@@ -3488,7 +3488,10 @@ function initSmartRetailERP(forceReload){
   frame.style.visibility='hidden';
   frame.onload=()=>finishSmartRetailErpLoading(frame,loading);
   try{
-    frame.srcdoc=getSmartRetailErpHtml();
+    /* SR_FRAME_SRC (build-time patch — scripts/build.mjs): the embedded
+       ERP is the standalone /erp.html page, not a base64-decoded srcdoc. */
+    if(frame.getAttribute('src')){frame.contentWindow.location.reload();}
+    else{frame.removeAttribute('srcdoc');frame.src='/erp.html';}
   }catch(error){
     frame.style.display='none';
     frame.style.visibility='visible';
