@@ -3542,11 +3542,13 @@ function reloadSmartRetailERP(){
   initSmartRetailERP(true);
 }
 function openSmartRetailERPWindow(){
+  /* SR_POPUP_STANDALONE (build-time patch — scripts/build.mjs): the new
+     window is the standalone /erp.html page with its own database-backed
+     store, not a blob copy borrowing this tab's memory. */
   try{
-    if(smartRetailErpBlobUrl) URL.revokeObjectURL(smartRetailErpBlobUrl);
-    smartRetailErpBlobUrl=URL.createObjectURL(new Blob([getSmartRetailErpHtml()],{type:'text/html;charset=utf-8'}));
-    const w=window.open(smartRetailErpBlobUrl,'_blank');
+    const w=window.open('/erp.html','smartRetailErpWindow');
     if(!w && typeof toast==='function') toast('Yangi oyna brauzer tomonidan bloklandi');
+    else if(w){try{w.focus();}catch(_){}}
   }catch(e){if(typeof toast==='function')toast('ERP oynasini ochib bo‘lmadi');}
 }
 </script>

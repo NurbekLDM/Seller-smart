@@ -30,6 +30,9 @@ function removeBlock(source, start, finish) {
 }
 
 let html = readFileSync(sourceFile, 'utf8');
+// Anchors below are LF; a core.autocrlf checkout hands us CRLF. The repo
+// stores the built files with LF, so normalising here changes nothing else.
+html = html.replace(/\r\n/g, '\n');
 
 // Drop the legacy Node-server sync (it targets /api/v1, which no longer exists).
 html = removeBlock(html, '<!-- SMART_RETAIL_PARENT_SYNC_21_BEGIN -->', '<!-- SMART_RETAIL_PARENT_SYNC_21_END -->');
@@ -390,6 +393,43 @@ function patchBackupMenu(appHtml) {
 }
 
 html = patchBackupMenu(html);
+
+/* ---- "Yangi oynada ochish" opens the standalone ERP page ---------------
+   The vendor popup is a blob: URL holding a second copy of the ERP whose
+   localStorage is redirected (supabase-sync.js FRAME_BOOTSTRAP) to the
+   OPENER's in-memory workspace store. That is why the new window loses its
+   data: reload or close the main tab and the popup has no data source left
+   ("Ma’lumot manbai topilmadi"), and anything it wrote in between never
+   reached the database on its own.
+
+   public/erp.html is a real page with its own session, its own
+   Postgres-backed store and full hydration (erp-page.js), so it needs no
+   opener at all: it keeps working when the main tab is closed, survives a
+   reload, and two windows behave exactly like two devices. The popup is
+   pointed at it. A named target re-focuses the already open ERP window
+   instead of opening a third copy. */
+
+const POPUP_ANCHOR = `function openSmartRetailERPWindow(){
+  try{
+    if(smartRetailErpBlobUrl) URL.revokeObjectURL(smartRetailErpBlobUrl);
+    smartRetailErpBlobUrl=URL.createObjectURL(new Blob([getSmartRetailErpHtml()],{type:'text/html;charset=utf-8'}));
+    const w=window.open(smartRetailErpBlobUrl,'_blank');
+    if(!w && typeof toast==='function') toast('Yangi oyna brauzer tomonidan bloklandi');
+  }catch(e){if(typeof toast==='function')toast('ERP oynasini ochib bo‘lmadi');}
+}`;
+
+const POPUP_STANDALONE = `function openSmartRetailERPWindow(){
+  /* SR_POPUP_STANDALONE (build-time patch — scripts/build.mjs): the new
+     window is the standalone /erp.html page with its own database-backed
+     store, not a blob copy borrowing this tab's memory. */
+  try{
+    const w=window.open('/erp.html','smartRetailErpWindow');
+    if(!w && typeof toast==='function') toast('Yangi oyna brauzer tomonidan bloklandi');
+    else if(w){try{w.focus();}catch(_){}}
+  }catch(e){if(typeof toast==='function')toast('ERP oynasini ochib bo‘lmadi');}
+}`;
+
+html = mustReplaceOnce(html, POPUP_ANCHOR, POPUP_STANDALONE, 'erp popup standalone');
 
 writeFileSync(outputFile, html);
 
