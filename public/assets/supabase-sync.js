@@ -198,6 +198,32 @@
     } catch (_) { /* the frame can be reopened manually */ }
   }
 
+  /* The app's own boot runs inline while the page is still parsing:
+     init() reads location.hash and, for "#retailerp", builds the ERP frame
+     right there — before this file (injected before </body>) has wrapped
+     getSmartRetailErpHtml / initSmartRetailERP. That frame has no
+     FRAME_BOOTSTRAP, so its localStorage is the browser's real, empty one:
+     the ERP opens with 0 products and everything typed into it goes to
+     the browser instead of the database. Reloading the frame by hand
+     ("Qayta yuklash") fixed it, so do that automatically the moment the
+     workspace has arrived. The srcdoc attribute is the definitive signal
+     (the frame document may still be parsing). */
+  function repairUnboundErpFrame() {
+    var frame = document.getElementById('smartRetailErpFrame');
+    if (!frame || frame.dataset.loaded !== '1') return false;
+    var html = frame.getAttribute('srcdoc') || '';
+    if (!html || html.indexOf('srStoreFrameBootstrap') !== -1) return false;
+    console.warn('ERP frame booted before the workspace store — reloading it.');
+    try {
+      frame.dataset.loaded = '0';
+      if (typeof window.initSmartRetailERP === 'function') window.initSmartRetailERP(true);
+      return true;
+    } catch (error) {
+      console.warn('ERP frame reload failed:', error.message);
+      return false;
+    }
+  }
+
   async function startStore(session, profile) {
     var workspace = profile.workspace_owner || session.user.id;
     store.install();
@@ -211,6 +237,8 @@
       if (key === ANALYTICS_KEY) { applyAnalytics(localStorage.getItem(ANALYTICS_KEY)); return; }
       refreshErpFrame();
     });
+    repairUnboundErpFrame();
+    document.addEventListener('DOMContentLoaded', repairUnboundErpFrame);
 
     await applyAnalytics(localStorage.getItem(ANALYTICS_KEY));
 
