@@ -56,7 +56,18 @@
   }
 
   window.smartRetailInstallStaffBridge = function (resolveHost) {
-    if (window.__srEmployeeHookInstalled) return window.__srStaffBridgeReconcile || null;
+    if (window.__srEmployeeHookInstalled) {
+      /* Installed already - but the ERP's own scripts may have run SINCE.
+         On /erp.html they are inert until the workspace is fetched
+         (erp-page.js executes them well after DOMContentLoaded), and each
+         declares authSaveUser / authDeleteUser / authOpenUserModal as a
+         global function, which replaces the overrides below. Put them
+         back. Found 2026-09-03: a new owner's "create employee" went to
+         the vendor's browser-only save, and the next reconcile erased it,
+         so nothing was ever created. */
+      if (typeof window.__srStaffBridgeApply === 'function') window.__srStaffBridgeApply();
+      return window.__srStaffBridgeReconcile || null;
+    }
     window.__srEmployeeHookInstalled = true;
 
     try {
@@ -216,6 +227,11 @@
       }).catch(function (error) { console.warn('Staff list unavailable:', error.message); });
     }
 
+    /* The three overrides, re-applicable: every call puts the bridge's
+       handlers back on top of whatever the vendor's scripts declared. */
+    function applyOverrides() {
+    if (window.authSaveUser && window.authSaveUser.srBridge) return;
+
     window.authSaveUser = function () {
       var id = document.getElementById('authUserId').value;
       var fullName = document.getElementById('authUserFullName').value.trim();
@@ -239,6 +255,7 @@
         showToast(error.message || 'Xatolik yuz berdi', 'bi-x-circle text-danger');
       });
     };
+    window.authSaveUser.srBridge = true;
 
     window.authDeleteUser = function (id) {
       var users = typeof authGetUsers === 'function' ? authGetUsers() : [];
@@ -263,25 +280,33 @@
         performDelete();
       }
     };
+    window.authDeleteUser.srBridge = true;
 
     // The login (== the account's real email prefix) cannot be renamed
     // from here — only the display name and permissions can.
     var baseOpenModal = window.authOpenUserModal;
-    if (typeof baseOpenModal === 'function') {
-      window.authOpenUserModal = function (id) {
+    if (typeof baseOpenModal === 'function' && !baseOpenModal.srBridge) {
+      var openModal = function (id) {
         baseOpenModal(id || '');
         if (id) {
           var usernameEl = document.getElementById('authUserUsername');
           if (usernameEl) usernameEl.disabled = true;
         }
       };
+      openModal.srBridge = true;
+      window.authOpenUserModal = openModal;
     }
+    }
+    applyOverrides();
+    window.__srStaffBridgeApply = applyOverrides;
 
     document.addEventListener('click', function (event) {
       var target = event.target;
       if (!target || !target.closest) return;
       if (target.closest('[data-view="employees"], [data-view-link="employees"], [data-bn="employees"]')) {
-        window.setTimeout(reconcile, 30);
+        // Belt and braces: the screen is about to be used, so make sure
+        // the vendor's handlers have not crept back in the meantime.
+        window.setTimeout(function () { applyOverrides(); reconcile(); }, 30);
       }
     }, true);
 
