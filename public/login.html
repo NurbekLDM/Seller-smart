@@ -60,6 +60,9 @@
         } catch (_) { /* unreadable storage */ }
         try { client.auth.signOut(); } catch (_) { /* best effort */ }
         errorBox.textContent = 'Sessiya server tomonidan qabul qilinmadi. Qaytadan kiring — muammo takrorlansa, administratorga xabar bering.';
+      } else if (/[?&]session=noproduct(&|$)/.test(window.location.search)) {
+        // Signed out by the app: the account has neither product enabled.
+        errorBox.textContent = 'Bu hisobga hech qanday mahsulot (Analitika yoki ERP) ulanmagan. Administratorga murojaat qiling.';
       } else if (window.smartRetailAuthReady) {
         // Already signed in? Go straight to the right app for the role.
         window.smartRetailAuthReady.then(function (session) {
@@ -67,7 +70,11 @@
           var target = '/';
           try {
             var cached = JSON.parse(localStorage.getItem('sr-erp-profile') || 'null');
-            if (cached && cached.id === session.user.id && cached.role === 'STAFF') target = '/erp.html';
+            if (cached && cached.id === session.user.id) {
+              if (cached.role === 'STAFF') target = '/erp.html';
+              // An owner who bought only the ERP lives on the ERP page.
+              else if (Array.isArray(cached.products) && cached.products.indexOf('analytics') === -1) target = '/erp.html';
+            }
           } catch (_) { /* ignore */ }
           window.location.replace(target);
         });
@@ -90,7 +97,8 @@
         client.auth.signInWithPassword({ email: email, password: password }).then(function (result) {
           if (result.error) throw new Error('Login yoki parol noto‘g‘ri.');
           var session = result.data.session;
-          return client.from('profiles').select('active, username, expires_at, erp_role, workspace_owner, erp_modules').eq('id', session.user.id).single()
+          // Every column: a not-yet-migrated database must not fail the login.
+          return client.from('profiles').select('*').eq('id', session.user.id).single()
             .then(function (profileResult) {
               var profile = profileResult.data;
               if (!profile && profileResult.error) {
@@ -109,6 +117,17 @@
                 });
               }
               var isStaff = Boolean(profile.workspace_owner) || profile.erp_role === 'STAFF';
+              /* Products (supabase/2026-09-03-products.sql): 'analytics',
+                 'erp' or both. Owners land on the product they bought;
+                 staff always work in the ERP. A database without the
+                 column yet grants both. */
+              var products = Array.isArray(profile.products) ? profile.products : ['analytics', 'erp'];
+              if (!isStaff && !products.length) {
+                return client.auth.signOut().then(function () {
+                  throw new Error('Bu hisobga hech qanday mahsulot (Analitika yoki ERP) ulanmagan. Administratorga murojaat qiling.');
+                });
+              }
+              var target = isStaff ? '/erp.html' : (products.indexOf('analytics') !== -1 ? '/' : '/erp.html');
               // Cache identity so the next page can seed synchronously.
               try {
                 localStorage.setItem('sr-username', profile.username || session.user.email || '');
@@ -116,14 +135,15 @@
                   id: session.user.id,
                   role: isStaff ? 'STAFF' : 'OWNER',
                   name: profile.username || session.user.email || '',
-                  modules: Array.isArray(profile.erp_modules) ? profile.erp_modules : []
+                  modules: Array.isArray(profile.erp_modules) ? profile.erp_modules : [],
+                  workspace: profile.workspace_owner || session.user.id,
+                  products: products
                 }));
               } catch (_) {}
               if (window.smartRetailSetAuthCookie) {
                 window.smartRetailSetAuthCookie(session.access_token, 7 * 24 * 3600);
               }
-              // Staff use only the ERP; owners get the full platform.
-              window.location.replace(isStaff ? '/erp.html' : '/');
+              window.location.replace(target);
             });
         }).catch(function (problem) {
           errorBox.textContent = problem.message || 'Tizimga kirib bo‘lmadi.';

@@ -68,10 +68,28 @@ async function isAdmin(userId) {
   return admins.length > 0 && profiles.length > 0 && profiles[0].active !== false && notExpired(profiles[0]);
 }
 
+/* What an account bought (supabase/2026-09-03-products.sql). Owners hold
+   one or both; staff inherit their owner's. A row read from a database
+   that has not received the migration yet has no column and means both. */
+const PRODUCTS = ['analytics', 'erp'];
+
+function productsOf(profile) {
+  return Array.isArray(profile.products) ? PRODUCTS.filter((p) => profile.products.includes(p)) : PRODUCTS.slice();
+}
+
+function validProducts(list) {
+  if (!Array.isArray(list)) throw Object.assign(new Error('Mahsulotlar ro‘yxati noto‘g‘ri.'), { status: 400 });
+  const chosen = PRODUCTS.filter((p) => list.includes(p));
+  if (!chosen.length) throw Object.assign(new Error('Kamida bitta mahsulot (Analitika yoki ERP) tanlang.'), { status: 400 });
+  return chosen;
+}
+
 async function listUsers() {
   const [authData, profiles, admins] = await Promise.all([
     readJson(await fetch(`${SUPABASE_URL}/auth/v1/admin/users?per_page=1000`, { headers: serviceHeaders })),
-    readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?select=id,username,active,expires_at,workspace_owner,erp_role,erp_modules`, { headers: serviceHeaders })),
+    // select=* rather than a column list: a column the database does not
+    // have yet (products) must not turn the whole listing into a 400.
+    readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?select=*`, { headers: serviceHeaders })),
     readJson(await fetch(`${SUPABASE_URL}/rest/v1/admins?select=user_id`, { headers: serviceHeaders }))
   ]);
   const authUsers = Array.isArray(authData) ? authData : (authData.users || []);
@@ -91,6 +109,7 @@ async function listUsers() {
       owner_id: profile.workspace_owner || '',
       owner_email: profile.workspace_owner ? (emailById.get(profile.workspace_owner) || '') : '',
       erp_modules: Array.isArray(profile.erp_modules) ? profile.erp_modules : [],
+      products: productsOf(profile),
       created_at: user.created_at || '',
       last_sign_in_at: user.last_sign_in_at || ''
     };
@@ -122,6 +141,8 @@ async function createUser(body) {
   if (!validEmail(body.email)) throw Object.assign(new Error('Email noto‘g‘ri.'), { status: 400 });
   if (!validPassword(body.password)) throw Object.assign(new Error('Parol kamida 8 belgidan iborat bo‘lishi kerak.'), { status: 400 });
   const expiresAt = parseExpiry(body.expires_at);
+  // Validated BEFORE the account exists, so a bad request creates nothing.
+  const products = 'products' in body ? validProducts(body.products) : PRODUCTS.slice();
   const created = await readJson(await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
     method: 'POST',
     headers: serviceHeaders,
@@ -132,11 +153,16 @@ async function createUser(body) {
       user_metadata: { username: cleanUsername(body.username) }
     })
   }));
-  if (expiresAt) {
+  const patch = {};
+  if (expiresAt) patch.expires_at = expiresAt;
+  // Both products is the column's default, so it is only written when the
+  // admin narrowed it - a database without the column yet is left alone.
+  if (products.length !== PRODUCTS.length) patch.products = products;
+  if (Object.keys(patch).length) {
     await readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${encodeURIComponent(created.id)}`, {
       method: 'PATCH',
       headers: { ...serviceHeaders, prefer: 'return=minimal' },
-      body: JSON.stringify({ expires_at: expiresAt })
+      body: JSON.stringify(patch)
     }));
   }
   return { id: created.id, email: created.email };
@@ -159,6 +185,7 @@ async function updateProfile(callerId, body) {
     }
     patch.active = body.active;
   }
+  if ('products' in body) patch.products = validProducts(body.products);
   if (!Object.keys(patch).length) throw Object.assign(new Error('O‘zgartirish ko‘rsatilmagan.'), { status: 400 });
   await readJson(await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${encodeURIComponent(id)}`, {
     method: 'PATCH',

@@ -1522,7 +1522,7 @@ const DB_KEYS = {
 const fmt = n => Math.round(n).toLocaleString('ru-RU').replace(/,/g, ' ');
 const uid = p => p + '-' + Math.random().toString(36).slice(2, 8).toUpperCase();
 const today = () => new Date();
-const isoDaysAgo = d => { const t = new Date(); t.setDate(t.getDate() - d); return t.toISOString().slice(0, 10); };
+const isoDaysAgo = d => { const t = new Date(); t.setDate(t.getDate() - d); return new Date(t.getTime() - t.getTimezoneOffset() * 60000).toISOString().slice(0, 10); }; /* SR_LOCAL_TIME */
 
 function db_get(key) { try { return JSON.parse(localStorage.getItem(key)) || []; } catch (e) { return []; } }
 function db_set(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
@@ -5744,7 +5744,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 DB_KEYS.receipts='srerp_receipts_v13';DB_KEYS.loyaltySettings='srerp_loyalty_settings_v13';DB_KEYS.loyaltyTransactions='srerp_loyalty_transactions_v13';DB_KEYS.reportFilter='srerp_report_filter_v13';DB_KEYS.notificationRead='srerp_notification_read_v13';
 const V13_VERSION='13.0';let v13PendingImage={np:'',ep:''},v13CurrentReceiptId='',v13DeferredInstall=null;
 const v13N=v=>Number.isFinite(Number(v))?Number(v):0;const v13E=v=>String(v??'').replace(/[&<>\'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-function v13Iso(d){return new Date(d).toISOString().slice(0,10)}function v13Today(){return v13Iso(new Date())}function v13AddDays(iso,n){const d=new Date(iso+'T12:00:00');d.setDate(d.getDate()+n);return v13Iso(d)}
+function v13Iso(d){const x=new Date(d);return new Date(x.getTime()-x.getTimezoneOffset()*60000).toISOString().slice(0,10)} /* SR_LOCAL_TIME */function v13Today(){return v13Iso(new Date())}function v13AddDays(iso,n){const d=new Date(iso+'T12:00:00');d.setDate(d.getDate()+n);return v13Iso(d)}
 function v13GetLoyaltySettings(){try{return {...{earnEvery:10000,pointValue:100},...JSON.parse(localStorage.getItem(DB_KEYS.loyaltySettings)||'{}')}}catch(e){return{earnEvery:10000,pointValue:100}}}
 function v13SetLoyaltySettings(v){localStorage.setItem(DB_KEYS.loyaltySettings,JSON.stringify(v))}
 function v13EnsureCustomerBonus(){let rows=db_get(DB_KEYS.customers),changed=false;rows.forEach(c=>{if(!Number.isFinite(Number(c.bonusPoints))){c.bonusPoints=0;changed=true}});if(changed)db_set(DB_KEYS.customers,rows)}
@@ -8326,6 +8326,18 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
     date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
     return date.toISOString().slice(0, 10);
   }
+  /* SR_LOCAL_TIME (build-time patch - scripts/build.mjs): an ISO
+     timestamp shown on the terminal's own clock. A bare date, or a value
+     that is not a date at all, is shown as it was stored. */
+  function localStamp(value, withSeconds) {
+    const raw = text(value);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return raw.replace('T', ' ').slice(0, withSeconds ? 19 : 16);
+    const pad = number => String(number).padStart(2, '0');
+    const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    return withSeconds ? `${stamp}:${pad(date.getSeconds())}` : stamp;
+  }
   function addDays(value, count) {
     const date = new Date(`${value || localToday()}T12:00:00`);
     date.setDate(date.getDate() + Number(count || 0));
@@ -8696,7 +8708,7 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
     body.innerHTML = visible.map(row => {
       const names = [...new Set(row.productNames)].slice(0, 3);
       const more = [...new Set(row.productNames)].length - names.length;
-      return `<tr><td><button class="btn p-0 text-start ops24-order" onclick="opsOpenSaleDetails(decodeURIComponent('${encodeURIComponent(row.key)}'))">${esc(row.orderId)}</button><div class="ops24-muted">${esc(row.createdAt.replace('T', ' ').slice(0, 16))}</div></td>
+      return `<tr><td><button class="btn p-0 text-start ops24-order" onclick="opsOpenSaleDetails(decodeURIComponent('${encodeURIComponent(row.key)}'))">${esc(row.orderId)}</button><div class="ops24-muted">${esc(localStamp(row.createdAt))}</div></td>
         <td>${esc(row.customer)}<div class="ops24-muted">${esc(row.cashier)}</div></td><td class="ops24-product-list">${names.map(esc).join(', ')}${more > 0 ? `<span class="ops24-muted"> +${more}</span>` : ''}<div class="ops24-muted">${row.originalQty} dona · ${row.activeLines.length + row.returnedLines.length} qator</div></td>
         <td>${esc(row.payment)}</td><td class="mono">${esc(money(row.originalTotal))}</td><td class="mono text-danger">${row.returnTotal ? `−${esc(money(row.returnTotal))}` : '—'}</td><td class="mono"><b>${esc(money(row.activeTotal))}</b></td><td class="mono">${esc(money(row.profit))}</td><td>${statusBadge(row)}</td><td><button class="btn btn-outline-erp btn-sm-erp" onclick="opsOpenSaleDetails(decodeURIComponent('${encodeURIComponent(row.key)}'))"><i class="bi bi-eye"></i> Ko‘rish</button></td></tr>`;
     }).join('') || '<tr><td colspan="10"><div class="ops24-empty"><i class="bi bi-receipt"></i>Tanlangan shartlar bo‘yicha sotuv topilmadi.</div></td></tr>';
@@ -9059,8 +9071,8 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
     const root = document.getElementById('ops24SaleBody');
     if (!row || !root) return;
     const activeRows = row.activeLines.map(line => `<tr><td class="mono">${esc(line.sku)}</td><td>${esc(line.name)}</td><td>${whole(line.qty)}</td><td class="mono">${esc(money(line.price))}</td><td class="mono">${esc(money(line.total))}</td></tr>`).join('');
-    const returnRows = row.returnedLines.map(item => `<tr><td>${esc(item.createdAt?.replace('T', ' ').slice(0, 16) || item.date)}</td><td class="mono">${esc(item.sale?.sku)}</td><td>${esc(item.sale?.name)}</td><td>${whole(item.sale?.qty)}</td><td class="mono">${esc(money(item.sale?.total))}</td><td>${esc(item.reason || 'Ko‘rsatilmagan')}</td></tr>`).join('');
-    root.innerHTML = `<div class="ops24-order-detail"><div><span>Buyurtma</span><b class="mono">${esc(row.orderId)}</b></div><div><span>Sana / kassir</span><b>${esc(row.createdAt.replace('T', ' ').slice(0, 16))} · ${esc(row.cashier)}</b></div><div><span>Mijoz / to‘lov</span><b>${esc(row.customer)} · ${esc(row.payment)}</b></div><div><span>Holat</span><b>${statusBadge(row)}</b></div></div><div class="ops24-order-detail"><div><span>Sotuv jami</span><b>${esc(money(row.originalTotal))}</b></div><div><span>Qaytarildi</span><b class="text-danger">${esc(money(row.returnTotal))}</b></div><div><span>Amaldagi tushum</span><b>${esc(money(row.activeTotal))}</b></div><div><span>Foyda</span><b class="text-success">${esc(money(row.profit))}</b></div></div><div class="section-title mb-2">Amaldagi mahsulotlar</div><div class="table-responsive"><table class="table table-sm"><thead><tr><th>SKU</th><th>Mahsulot</th><th>Soni</th><th>Narx</th><th>Jami</th></tr></thead><tbody>${activeRows || '<tr><td colspan="5" class="text-muted">Barcha mahsulotlar qaytarilgan.</td></tr>'}</tbody></table></div>${returnRows ? `<div class="section-title mt-3 mb-2">Qaytarishlar</div><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Sana</th><th>SKU</th><th>Mahsulot</th><th>Soni</th><th>Summa</th><th>Sabab</th></tr></thead><tbody>${returnRows}</tbody></table></div>` : ''}`;
+    const returnRows = row.returnedLines.map(item => `<tr><td>${esc(item.createdAt ? localStamp(item.createdAt) : item.date)}</td><td class="mono">${esc(item.sale?.sku)}</td><td>${esc(item.sale?.name)}</td><td>${whole(item.sale?.qty)}</td><td class="mono">${esc(money(item.sale?.total))}</td><td>${esc(item.reason || 'Ko‘rsatilmagan')}</td></tr>`).join('');
+    root.innerHTML = `<div class="ops24-order-detail"><div><span>Buyurtma</span><b class="mono">${esc(row.orderId)}</b></div><div><span>Sana / kassir</span><b>${esc(localStamp(row.createdAt))} · ${esc(row.cashier)}</b></div><div><span>Mijoz / to‘lov</span><b>${esc(row.customer)} · ${esc(row.payment)}</b></div><div><span>Holat</span><b>${statusBadge(row)}</b></div></div><div class="ops24-order-detail"><div><span>Sotuv jami</span><b>${esc(money(row.originalTotal))}</b></div><div><span>Qaytarildi</span><b class="text-danger">${esc(money(row.returnTotal))}</b></div><div><span>Amaldagi tushum</span><b>${esc(money(row.activeTotal))}</b></div><div><span>Foyda</span><b class="text-success">${esc(money(row.profit))}</b></div></div><div class="section-title mb-2">Amaldagi mahsulotlar</div><div class="table-responsive"><table class="table table-sm"><thead><tr><th>SKU</th><th>Mahsulot</th><th>Soni</th><th>Narx</th><th>Jami</th></tr></thead><tbody>${activeRows || '<tr><td colspan="5" class="text-muted">Barcha mahsulotlar qaytarilgan.</td></tr>'}</tbody></table></div>${returnRows ? `<div class="section-title mt-3 mb-2">Qaytarishlar</div><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Sana</th><th>SKU</th><th>Mahsulot</th><th>Soni</th><th>Summa</th><th>Sabab</th></tr></thead><tbody>${returnRows}</tbody></table></div>` : ''}`;
     new bootstrap.Modal(document.getElementById('ops24SaleModal')).show();
   };
   window.opsRefreshProductImportPlan = function refreshImportPlan(mode) {
@@ -9121,7 +9133,7 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
   }
   window.opsExportSalesHistory = function exportSalesHistory() {
     const rows = filteredSalesRows();
-    const orderRows = rows.map(row => ({ Buyurtma: row.orderId, Sana: row.date, Vaqt: row.createdAt.slice(11, 19), Mijoz: row.customer, Kassir: row.cashier, Tolov: row.payment, Mahsulotlar: [...new Set(row.productNames)].join('; '), SotuvJami: row.originalTotal, Qaytarildi: row.returnTotal, AmaldagiTushum: row.activeTotal, Foyda: row.profit, Soliq: row.tax, Holat: row.status }));
+    const orderRows = rows.map(row => ({ Buyurtma: row.orderId, Sana: row.date, Vaqt: localStamp(row.createdAt, true).slice(11), Mijoz: row.customer, Kassir: row.cashier, Tolov: row.payment, Mahsulotlar: [...new Set(row.productNames)].join('; '), SotuvJami: row.originalTotal, Qaytarildi: row.returnTotal, AmaldagiTushum: row.activeTotal, Foyda: row.profit, Soliq: row.tax, Holat: row.status }));
     const returnRows = rows.flatMap(row => row.returnedLines.map(item => ({ Buyurtma: row.orderId, Sana: item.date || text(item.createdAt).slice(0, 10), SKU: item.sale?.sku, Mahsulot: item.sale?.name, Miqdor: item.sale?.qty, Summa: item.sale?.total, Sabab: item.reason || '', Xodim: item.actor || '' })));
     if (typeof XLSX !== 'undefined' && XLSX.utils?.book_new) {
       const workbook = XLSX.utils.book_new();
@@ -13693,7 +13705,7 @@ html[data-theme="light"] .ops24-table thead{background:#eef1f8}
     const products=clone(asArray(input.products)),cells=clone(asArray(input.cells)),sales=clone(asArray(input.sales)),receipts=clone(asArray(input.receipts)),moves=clone(asArray(input.moves)),cart=clone(asArray(input.cart));
     if(!cart.length)throw new Error("Savat bo‘sh.");const totals=cartTotals(cart),payment=paymentBreakdown(totals.total,input.paymentType,input.cashGiven,input.cardGiven,input.mixedCash,input.mixedCard);if(!payment.valid)throw new Error(payment.message);
     const aggregate=aggregateProducts(products);cart.forEach(function(line){const qty=whole(line.qty,"Miqdor"),available=aggregate.find(function(row){return normSku(row.sku)===normSku(line.sku);});if(!available||available.qty<qty)throw new Error(line.name+": qoldiq yetarli emas. Mavjud: "+(available?available.qty:0)+" dona.");});
-    const now=clean(input.now)||new Date().toISOString(),date=clean(input.date)||now.slice(0,10),makeId=typeof input.id==="function"?input.id:function(prefix){return prefix+"-"+Math.random().toString(36).slice(2,10).toUpperCase();},receiptId=makeId("RCPM"),orderId=makeId("PMO"),sequence=receipts.filter(function(row){return row&&row.source===SOURCE&&row.date===date;}).length+1,receiptNumber="PM-"+date.replace(/-/g,"")+"-"+String(sequence).padStart(4,"0"),saleIds=[],moveIds=[],changes=[],items=[];let remainingPaymentDiscount=payment.discount;
+    const now=clean(input.now)||new Date().toISOString(),date=clean(input.date)||(function(){const d=new Date(now);return Number.isNaN(d.getTime())?now.slice(0,10):new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);})()/* SR_LOCAL_TIME */,makeId=typeof input.id==="function"?input.id:function(prefix){return prefix+"-"+Math.random().toString(36).slice(2,10).toUpperCase();},receiptId=makeId("RCPM"),orderId=makeId("PMO"),sequence=receipts.filter(function(row){return row&&row.source===SOURCE&&row.date===date;}).length+1,receiptNumber="PM-"+date.replace(/-/g,"")+"-"+String(sequence).padStart(4,"0"),saleIds=[],moveIds=[],changes=[],items=[];let remainingPaymentDiscount=payment.discount;
     cart.forEach(function(line,lineIndex){
       let need=whole(line.qty,"Miqdor"),costTotal=0;const candidates=products.map(function(product,index){return{product:product,index:index};}).filter(function(entry){return normSku(entry.product.sku)===normSku(line.sku)&&Number(entry.product.qty)>0;}).sort(function(a,b){return batchDate(a.product).localeCompare(batchDate(b.product))||a.index-b.index;});
       candidates.forEach(function(entry){if(need<=0)return;const before=Math.max(0,Math.round(Number(entry.product.qty)||0)),take=Math.min(need,before);if(!take)return;entry.product.qty=before-take;entry.product.updatedAt=now;changes.push({index:entry.index,id:clean(entry.product.id),beforeQty:before,afterQty:entry.product.qty});need-=take;costTotal+=money(entry.product.cost)*take;const moveId=makeId("MOV");moveIds.push(moveId);moves.unshift({id:moveId,time:now,date:date,sku:line.sku,name:line.name,qty:take,from:clean(entry.product.location)||warehouseOf(entry.product)||"Product Master",to:"POS Kassa Mobile",type:"SALE",source:SOURCE,postingId:receiptId,receiptId:receiptId,orderId:orderId});});

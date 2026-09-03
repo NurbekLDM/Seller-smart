@@ -33,8 +33,9 @@ Production architecture:
 
    For an existing project, prefer the dated migration files next to it over
    re-running the whole schema. `supabase/2026-08-30-staff-write-guard.sql`
-   is the only one so far; it is already folded into `schema.sql`, so a
-   project provisioned from that file does not need it.
+   is folded into `schema.sql`; the `2026-09-01-workspace-kv*.sql` series
+   (the per-key store) and `2026-09-03-products.sql` (products per
+   account) are NOT — an existing project must run those in date order.
 3. **Authentication → Sign In / Providers**: make sure Email is enabled and
    **disable "Allow new users to sign up"** — only the owner creates accounts.
 4. **Authentication → Users → Add user**: create the owner's account
@@ -65,6 +66,15 @@ Employee accounts never expire (no `expires_at`) — only `active`/blocked.
 **Validity periods**: full owner accounts can be given an expiry
 (`expires_at`) from the `/admin` dashboard (1 kun / 1 oy / 1 yil / custom);
 expired accounts are blocked at the database, API, and login layers.
+
+**Products** (`supabase/2026-09-03-products.sql` — run it once on an
+existing project): the platform is sold as two products, **Analitika**
+(the Uzum analytics page, `/`) and **ERP** (`/erp.html`). The `/admin`
+dashboard enables one or both per owner account (`profiles.products`);
+existing accounts keep both. An analytics-only owner never sees the ERP
+entry; an ERP-only owner lands on the ERP page. The database enforces it
+(`workspace_kv` policies + a row trigger), so a browser sent to the wrong
+page still gets no data. ERP staff follow their owner's ERP product.
 
 Deactivate a user without deleting their data:
 `update public.profiles set active = false where id = '...';`

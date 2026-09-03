@@ -101,6 +101,18 @@ alter table public.profiles add column if not exists erp_role text;
 -- access); staff accounts never receive the wildcard '*'.
 alter table public.profiles add column if not exists erp_modules text[];
 
+-- v5 addition (2026-09-03): products — what the account bought. The two
+-- products are sold separately: 'analytics' (the Uzum analytics page) and
+-- 'erp' (Smart Retail ERP). Owners hold one or both, set from the /admin
+-- dashboard; staff accounts inherit their owner's. Existing accounts keep
+-- both. Enforced at the database by the workspace_kv policies
+-- (supabase/2026-09-03-products.sql), not only by the pages.
+alter table public.profiles add column if not exists products text[]
+  not null default array['analytics', 'erp']::text[];
+alter table public.profiles drop constraint if exists profiles_products_known;
+alter table public.profiles add constraint profiles_products_known
+  check (products <@ array['analytics', 'erp']::text[]);
+
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
@@ -124,7 +136,8 @@ create trigger on_auth_user_created
   for each row execute function public.handle_new_user();
 
 -- True while the caller's account exists, is not deactivated, has not
--- expired, and (for staff) the workspace owner is also valid.
+-- expired, and (for staff) the workspace owner is also valid AND still
+-- has the ERP — staff exist only inside the ERP product.
 create or replace function public.is_active_user()
 returns boolean
 language sql
@@ -139,10 +152,53 @@ as $$
               select 1 from public.profiles o
               where o.id = p.workspace_owner
                 and o.active
-                and (o.expires_at is null or o.expires_at > now())))
+                and (o.expires_at is null or o.expires_at > now())
+                and 'erp' = any(o.products)))
     from public.profiles p where p.id = auth.uid()
   ), false);
 $$;
+
+-- Which product a workspace key belongs to. The analytics page keeps its
+-- whole state in one key; everything else in the synced key space is the
+-- ERP's.
+create or replace function public.key_product(k text)
+returns text
+language sql
+immutable
+as $$
+  select case when k = 'srerp_analytics_parent_state' then 'analytics' else 'erp' end;
+$$;
+
+-- Whether the OWNER of a workspace holds a product. Keyed by workspace so
+-- it answers the same for the owner and for their staff.
+create or replace function public.workspace_has_product(ws uuid, product text)
+returns boolean
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select coalesce((select product = any(p.products) from public.profiles p where p.id = ws), false);
+$$;
+
+-- The caller's products: their own, or their owner's (staff). Staff cannot
+-- read their owner's profile row, so this is how the ERP page learns them.
+create or replace function public.my_products()
+returns text[]
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select coalesce((
+    select o.products
+    from public.profiles p
+    join public.profiles o on o.id = coalesce(p.workspace_owner, p.id)
+    where p.id = auth.uid()
+  ), '{}'::text[]);
+$$;
+revoke all on function public.my_products() from public, anon;
+grant execute on function public.my_products() to authenticated;
 
 -- The workspace the caller works in: their own, or their owner's (staff).
 create or replace function public.workspace_of()

@@ -68,15 +68,20 @@ function notExpired(profile) {
   return !profile.expires_at || new Date(profile.expires_at).getTime() > Date.now();
 }
 
-// The caller must be an active, unexpired workspace OWNER.
+// The caller must be an active, unexpired workspace OWNER who has the ERP.
 async function requireOwner(userId) {
   const rows = await readJson(await fetch(
-    `${SUPABASE_URL}/rest/v1/profiles?select=id,active,expires_at,workspace_owner&id=eq.${encodeURIComponent(userId)}`,
+    // select=*: the products column (2026-09-03) may not exist yet.
+    `${SUPABASE_URL}/rest/v1/profiles?select=*&id=eq.${encodeURIComponent(userId)}`,
     { headers: serviceHeaders }
   ));
   const profile = rows[0];
   if (!profile || profile.active === false || !notExpired(profile)) throw fail(403, 'Hisobingiz faol emas.');
   if (profile.workspace_owner) throw fail(403, 'Xodimlarni faqat workspace egasi boshqaradi.');
+  // ERP staff belong to the ERP product; an account without it has none.
+  if (Array.isArray(profile.products) && !profile.products.includes('erp')) {
+    throw fail(403, 'Bu hisobga Smart Retail ERP ulanmagan.');
+  }
   return profile;
 }
 

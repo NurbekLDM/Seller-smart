@@ -337,9 +337,13 @@
     // user is staff, leave for the ERP page BEFORE seeding anything.
     try {
       var cachedRole = JSON.parse(localStorage.getItem('sr-erp-profile') || 'null');
-      if (cachedRole && cachedRole.id === storedSession.id && cachedRole.role === 'STAFF') {
-        window.location.replace('/erp.html');
-        storedSession = null;
+      if (cachedRole && cachedRole.id === storedSession.id) {
+        // Staff, and owners who bought only the ERP, live on the ERP page.
+        var erpOnly = Array.isArray(cachedRole.products) && cachedRole.products.indexOf('analytics') === -1;
+        if (cachedRole.role === 'STAFF' || erpOnly) {
+          window.location.replace('/erp.html');
+          storedSession = null;
+        }
       }
     } catch (_) { /* unreadable cache — the async check below still routes */ }
   }
@@ -703,17 +707,24 @@
       });
     }
 
-    return client.from('profiles').select('active, username, expires_at, erp_role, workspace_owner').eq('id', session.user.id).single()
+    // Every column: a database that has not received a migration yet
+    // (products, 2026-09-03) must not turn into a guard that fails.
+    return client.from('profiles').select('*').eq('id', session.user.id).single()
       .then(function (profileResult) {
         var profile = profileResult.data;
         if (!profile && profileResult.error) {
           // Transient failure: fail closed for routing — if the cache says
-          // staff, go to the ERP page; otherwise keep the session as-is.
+          // staff (or ERP-only), go to the ERP page; otherwise keep the
+          // session as-is.
           try {
             var cached = JSON.parse(localStorage.getItem('sr-erp-profile') || 'null');
-            if (cached && cached.id === session.user.id && cached.role === 'STAFF') {
-              window.location.replace('/erp.html');
-              return new Promise(function () {});
+            if (cached && cached.id === session.user.id) {
+              var cachedErpOnly = Array.isArray(cached.products) && cached.products.indexOf('analytics') === -1;
+              if (cached.role === 'STAFF' || cachedErpOnly) {
+                window.location.replace('/erp.html');
+                return new Promise(function () {});
+              }
+              if (Array.isArray(cached.products) && cached.products.indexOf('erp') === -1) lockOutErp();
             }
           } catch (_) { /* ignore */ }
           return session;
@@ -739,13 +750,81 @@
           return new Promise(function () {}); // page is navigating away
         }
         var displayName = profile.username || session.user.email || '';
+        /* Products (supabase/2026-09-03-products.sql): 'analytics', 'erp'
+           or both, set on the /admin page. This page IS the analytics
+           product: an owner without it goes to the ERP page, or - with
+           nothing enabled at all - back to login. An owner without the
+           ERP stays, minus the ERP entry. A database without the column
+           yet grants both, so nothing changes until the migration runs. */
+        var products = Array.isArray(profile.products) ? profile.products : ['analytics', 'erp'];
+        var cacheEntry = { id: session.user.id, role: 'OWNER', name: displayName, workspace: session.user.id, products: products };
+        if (products.indexOf('analytics') === -1) {
+          if (products.indexOf('erp') !== -1) {
+            try { localStorage.setItem('sr-erp-profile', JSON.stringify(cacheEntry)); } catch (_) { /* ignore */ }
+            window.location.replace('/erp.html');
+            return new Promise(function () {}); // page is navigating away
+          }
+          clearInternalSession();
+          return Promise.resolve(client.auth.signOut()).catch(function () {}).then(function () {
+            purgeSupabaseStorage();
+            setAuthCookie('', 0);
+            window.location.replace('/login.html?session=noproduct');
+            return new Promise(function () {});
+          });
+        }
         try {
           localStorage.setItem(USERNAME_CACHE_KEY, displayName);
-          localStorage.setItem('sr-erp-profile', JSON.stringify({ id: session.user.id, role: 'OWNER', name: displayName }));
+          localStorage.setItem('sr-erp-profile', JSON.stringify(cacheEntry));
         } catch (_) { /* ignore */ }
         seedInternalSession(displayName); // refresh with the real name
+        if (products.indexOf('erp') === -1) lockOutErp();
         return session;
       })
       .catch(function () { return session; });
   });
+
+  /* An analytics-only account: the ERP is not part of what was bought.
+     The sidebar entry, its submenu and the section are hidden by a rule
+     that survives the vendor's own DOM rewrites (the erp22 gate renames
+     the button at DOMContentLoaded), the functions that would build the
+     frame or open the popup are replaced with a notice, and the
+     #retailerp route is redirected. The database refuses the ERP's data
+     for this account regardless (workspace_kv policies), so this is what
+     keeps the page tidy, not what keeps the data private. */
+  var erpLockedOut = false;
+  function lockOutErp() {
+    if (erpLockedOut) return;
+    erpLockedOut = true;
+    try {
+      var style = document.createElement('style');
+      style.id = 'srNoErpStyle';
+      style.textContent = '.nav-btn[data-view="retailerp"],.erp22-disclosure,#erp22Submenu,#view-retailerp{display:none!important}';
+      (document.head || document.documentElement).appendChild(style);
+    } catch (_) { /* ignore */ }
+    var refuse = function () {
+      if (typeof window.toast === 'function') window.toast('Smart Retail ERP bu hisobga ulanmagan');
+    };
+    var guard = function () {
+      ['initSmartRetailERP', 'reloadSmartRetailERP', 'openSmartRetailERPWindow'].forEach(function (name) {
+        if (typeof window[name] === 'function' && !window[name].srNoErp) {
+          var blocked = function () { refuse(); };
+          blocked.srNoErp = true;
+          window[name] = blocked;
+        }
+      });
+      if (typeof window.setView === 'function' && !window.setView.srNoErp) {
+        var original = window.setView;
+        var wrapped = function (name) {
+          if (name === 'retailerp') { refuse(); return original.call(this, 'dashboard'); }
+          return original.apply(this, arguments);
+        };
+        wrapped.srNoErp = true;
+        window.setView = wrapped;
+      }
+      try { if (window.location.hash === '#retailerp') window.location.hash = '#dashboard'; } catch (_) { /* ignore */ }
+    };
+    guard();
+    document.addEventListener('DOMContentLoaded', guard);
+    window.addEventListener('load', function () { window.setTimeout(guard, 0); });
+  }
 })();

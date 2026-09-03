@@ -38,6 +38,11 @@
     .muted{color:#8ea0bd;font-size:11.5px}
     .actions{display:flex;gap:6px;flex-wrap:wrap}
     .denied{max-width:520px;margin:12vh auto;text-align:center}
+    .check{display:inline-flex;align-items:center;gap:9px;height:42px;padding:0 14px;border:1px solid rgba(255,255,255,.14);border-radius:10px;background:#101b30;font-size:13px;color:#c8d5ea;cursor:pointer;user-select:none}
+    .check input{flex:0 0 auto;width:16px;height:16px;min-width:0;padding:0;margin:0;accent-color:#786eff}
+    button.pill{height:26px;padding:0 10px;font-size:11px;font-weight:700;border-radius:20px;background:rgba(255,255,255,.07);color:#6f7f9b;border:1px solid rgba(255,255,255,.1)}
+    button.pill.on{background:rgba(48,209,88,.15);color:#5fd98c;border-color:rgba(48,209,88,.35)}
+    .pills{display:flex;gap:6px}
   </style>
   <script src="assets/app-config.js"></script>
   <script src="assets/vendor/supabase.js"></script>
@@ -69,6 +74,11 @@
         <input id="newPassword" type="text" placeholder="Parol (kamida 8 belgi)" maxlength="72" autocomplete="off">
         <button class="ghost" id="genBtn" type="button">Parol yaratish</button>
       </div>
+      <div class="row" style="margin-top:8px;align-items:center">
+        <span class="muted" style="align-self:center">Sotib olingan mahsulotlar:</span>
+        <label class="check"><input type="checkbox" id="newAnalytics" checked> Uzum Analitika</label>
+        <label class="check"><input type="checkbox" id="newErp" checked> Smart Retail ERP</label>
+      </div>
       <div class="row" style="margin-top:8px">
         <select id="newExpiry" style="height:42px;padding:0 12px;border:1px solid rgba(255,255,255,.14);border-radius:10px;background:#101b30;color:#fff;font-size:13px;flex:1;min-width:170px">
           <option value="">Muddat: cheksiz</option>
@@ -88,11 +98,11 @@
 
     <div class="card">
       <h2>Foydalanuvchilar <span class="muted" id="countLabel"></span></h2>
-      <p class="muted" style="margin:-6px 0 12px;font-size:12px">Bu ro‘yxatda faqat workspace egalari. Har bir egasining ERP xodimlari “Xodimlar” ustunidagi sonni bosganda ochiladi — xodimlarni odatda egasining o‘zi ERP ichidan boshqaradi.</p>
+      <p class="muted" style="margin:-6px 0 12px;font-size:12px">Bu ro‘yxatda faqat workspace egalari. Har bir egasining ERP xodimlari “Xodimlar” ustunidagi sonni bosganda ochiladi — xodimlarni odatda egasining o‘zi ERP ichidan boshqaradi. “Mahsulotlar” ustunidagi tugmalar hisobga ulangan mahsulotni yoqadi yoki o‘chiradi (Analitika, ERP yoki ikkalasi).</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Email</th><th>Ism</th><th>Holat</th><th>Xodimlar</th><th>Muddat</th><th>Oxirgi kirish</th><th>Amallar</th></tr></thead>
-          <tbody id="rows"><tr><td colspan="7" class="muted">Yuklanmoqda...</td></tr></tbody>
+          <thead><tr><th>Email</th><th>Ism</th><th>Holat</th><th>Mahsulotlar</th><th>Xodimlar</th><th>Muddat</th><th>Oxirgi kirish</th><th>Amallar</th></tr></thead>
+          <tbody id="rows"><tr><td colspan="8" class="muted">Yuklanmoqda...</td></tr></tbody>
         </table>
       </div>
       <div class="error" id="listError"></div>
@@ -165,6 +175,12 @@
       // Which owners currently have their employee sub-table expanded.
       var expandedOwners = {};
 
+      // The two products an account can hold (profiles.products).
+      var PRODUCT_LABELS = [
+        { id: 'analytics', label: 'Analitika', consequence: 'U analitika sahifasini ocha olmaydi; faqat ERP qoladi.' },
+        { id: 'erp', label: 'ERP', consequence: 'U ERP‘ni ocha olmaydi va ERP xodimlari ham kira olmaydi; do‘kon ma’lumotlari saqlanib qoladi.' }
+      ];
+
       /* One employee row inside an owner's expanded sub-table. Employees are
          ERP-only accounts living in their owner's workspace: no expiry (they
          follow the owner's), no admin toggle, and the login is the account's
@@ -229,7 +245,7 @@
       function staffPanelRow(owner, staff) {
         var tr = document.createElement('tr');
         var cell = document.createElement('td');
-        cell.colSpan = 7;
+        cell.colSpan = 8;
         cell.style.cssText = 'background:rgba(255,255,255,.03);padding:12px 14px';
         var heading = document.createElement('div');
         heading.className = 'muted';
@@ -281,11 +297,37 @@
             '<td><span class="badge ' + (user.active ? 'on">Faol' : 'off">Bloklangan') + '</span>' +
               (user.is_admin ? '<span class="badge adm">Admin</span>' : '') + '</td>' +
             '<td></td>' +
+            '<td></td>' +
             '<td class="muted">' + expiryLabel + '</td>' +
             '<td class="muted">' + fmtDate(user.last_sign_in_at) + '</td>' +
             '<td></td>';
 
-          var staffCell = tr.children[3];
+          /* Products: one toggle per product. Clicking flips it and saves;
+             the last enabled product cannot be removed (the server refuses
+             an empty list too), so an account is never left with nothing
+             to sign in to. */
+          var productsCell = tr.children[3];
+          var pills = document.createElement('div');
+          pills.className = 'pills';
+          var held = Array.isArray(user.products) ? user.products : ['analytics', 'erp'];
+          PRODUCT_LABELS.forEach(function (product) {
+            var pill = document.createElement('button');
+            var on = held.indexOf(product.id) !== -1;
+            pill.className = 'pill' + (on ? ' on' : '');
+            pill.type = 'button';
+            pill.textContent = product.label;
+            pill.title = on ? product.label + ' yoqilgan — o‘chirish uchun bosing' : product.label + ' o‘chirilgan — yoqish uchun bosing';
+            pill.onclick = function () {
+              var next = on ? held.filter(function (id) { return id !== product.id; }) : held.concat([product.id]);
+              if (!next.length) { window.alert('Kamida bitta mahsulot yoqilgan bo‘lishi kerak.'); return; }
+              if (on && !window.confirm(user.email + ' uchun ' + product.label + ' o‘chirilsinmi?\n' + product.consequence)) return;
+              run(pill, { action: 'update', id: user.id, products: next });
+            };
+            pills.appendChild(pill);
+          });
+          productsCell.appendChild(pills);
+
+          var staffCell = tr.children[4];
           if (!staff.length) {
             staffCell.innerHTML = '<span class="muted">—</span>';
           } else {
@@ -446,11 +488,16 @@
         if (!password || password.length < 8) { el('createError').textContent = 'Parol kamida 8 belgi bo‘lsin (yoki "Parol yaratish" tugmasini bosing).'; return; }
         var expiresAt = chosenExpiry();
         if (expiresAt === undefined) { el('createError').textContent = 'Muddat uchun sanani tanlang.'; return; }
+        var products = [];
+        if (el('newAnalytics').checked) products.push('analytics');
+        if (el('newErp').checked) products.push('erp');
+        if (!products.length) { el('createError').textContent = 'Kamida bitta mahsulotni (Analitika yoki ERP) belgilang.'; return; }
         var button = el('createBtn');
         button.disabled = true;
-        api('POST', { action: 'create', email: email, username: username, password: password, expires_at: expiresAt }).then(function () {
+        api('POST', { action: 'create', email: email, username: username, password: password, expires_at: expiresAt, products: products }).then(function () {
           showNotice(esc(email) + ' yaratildi. Parol: <b>' + esc(password) + '</b> — hozir nusxalab foydalanuvchiga yuboring.');
           el('newEmail').value = ''; el('newUsername').value = ''; el('newPassword').value = '';
+          el('newAnalytics').checked = true; el('newErp').checked = true;
           return load();
         }).catch(function (error) {
           el('createError').textContent = error.message;

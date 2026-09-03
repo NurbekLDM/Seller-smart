@@ -394,6 +394,88 @@ function patchBackupMenu(appHtml) {
 
 html = patchBackupMenu(html);
 
+/* ---- Local time in the ERP (customer report, 2026-09-03) ---------------
+   Sotuvlar tarixi showed every sale five hours early. The row prints the
+   receipt's createdAt - an ISO string, which is UTC - by chopping the
+   string ("2026-09-03T04:12:00.000Z" -> "2026-09-03 04:12"), and the
+   shop is in Tashkent, UTC+5. The same chop feeds the order detail, the
+   returns list and the "Vaqt" column of the Excel export.
+
+   Two helpers that stamp the sale's DAY read the UTC calendar as well:
+   v13Iso() (behind v13Today(): the POS receipt's `date`, every dashboard
+   period filter) and isoDaysAgo() (the older sale path's todayISO). A sale
+   rung up between midnight and 05:00 therefore landed on the previous
+   day. Both now use the local calendar; a 'YYYY-MM-DD' string passed
+   through v13Iso() still comes back unchanged.
+
+   Patched in the base payload, so the embedded frame, the popup and
+   public/erp.html all show the same clock. Anchors are exact vendor text;
+   a mismatch fails the build. */
+
+function mustReplaceCount(source, needle, replacement, expected, label) {
+  const count = source.split(needle).length - 1;
+  if (count !== expected) {
+    throw new Error(`patch anchor "${label}" matched ${count} times (expected ${expected}); the vendor ERP changed - re-verify before shipping.`);
+  }
+  return source.split(needle).join(replacement);
+}
+
+const UTC_DAYS_AGO = 'const isoDaysAgo = d => { const t = new Date(); t.setDate(t.getDate() - d); return t.toISOString().slice(0, 10); };';
+const LOCAL_DAYS_AGO = 'const isoDaysAgo = d => { const t = new Date(); t.setDate(t.getDate() - d); return new Date(t.getTime() - t.getTimezoneOffset() * 60000).toISOString().slice(0, 10); }; /* SR_LOCAL_TIME */';
+
+const UTC_V13_ISO = 'function v13Iso(d){return new Date(d).toISOString().slice(0,10)}';
+const LOCAL_V13_ISO = 'function v13Iso(d){const x=new Date(d);return new Date(x.getTime()-x.getTimezoneOffset()*60000).toISOString().slice(0,10)} /* SR_LOCAL_TIME */';
+
+// Sotuvlar tarixi (operations module): a local-clock formatter next to
+// its existing localToday() helper, then every UTC chop routed through it.
+const OPS_LOCAL_TODAY = `  function localToday() {
+    const date = new Date();
+    date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+    return date.toISOString().slice(0, 10);
+  }`;
+const OPS_LOCAL_STAMP = `${OPS_LOCAL_TODAY}
+  /* SR_LOCAL_TIME (build-time patch - scripts/build.mjs): an ISO
+     timestamp shown on the terminal's own clock. A bare date, or a value
+     that is not a date at all, is shown as it was stored. */
+  function localStamp(value, withSeconds) {
+    const raw = text(value);
+    if (/^\\d{4}-\\d{2}-\\d{2}$/.test(raw)) return raw;
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return raw.replace('T', ' ').slice(0, withSeconds ? 19 : 16);
+    const pad = number => String(number).padStart(2, '0');
+    const stamp = \`\${date.getFullYear()}-\${pad(date.getMonth() + 1)}-\${pad(date.getDate())} \${pad(date.getHours())}:\${pad(date.getMinutes())}\`;
+    return withSeconds ? \`\${stamp}:\${pad(date.getSeconds())}\` : stamp;
+  }`;
+
+function patchLocalTime(appHtml) {
+  return patchB64Const(appHtml, 'SMART_RETAIL_ERP_B64', (erp) => {
+    let body = mustReplaceOnce(erp, UTC_DAYS_AGO, LOCAL_DAYS_AGO, 'erp isoDaysAgo');
+    body = mustReplaceOnce(body, UTC_V13_ISO, LOCAL_V13_ISO, 'erp v13Iso');
+    body = mustReplaceOnce(body, OPS_LOCAL_TODAY, OPS_LOCAL_STAMP, 'ops localToday');
+    // The order row and the order detail print the same expression.
+    body = mustReplaceCount(body,
+      "${esc(row.createdAt.replace('T', ' ').slice(0, 16))}",
+      '${esc(localStamp(row.createdAt))}', 2, 'ops sale createdAt');
+    body = mustReplaceOnce(body,
+      "${esc(item.createdAt?.replace('T', ' ').slice(0, 16) || item.date)}",
+      '${esc(item.createdAt ? localStamp(item.createdAt) : item.date)}', 'ops return createdAt');
+    body = mustReplaceOnce(body,
+      'Vaqt: row.createdAt.slice(11, 19)',
+      'Vaqt: localStamp(row.createdAt, true).slice(11)', 'ops export time');
+    return body;
+  });
+}
+
+html = patchLocalTime(html);
+
+/* The mobile POS module (a separate payload) stamps a sale's day from the
+   UTC string too: `date = now.slice(0, 10)` with `now` an ISO timestamp.
+   Same fix: the terminal's own calendar day. */
+const POS_MOBILE_UTC_DAY = 'now=clean(input.now)||new Date().toISOString(),date=clean(input.date)||now.slice(0,10)';
+const POS_MOBILE_LOCAL_DAY = 'now=clean(input.now)||new Date().toISOString(),date=clean(input.date)||(function(){const d=new Date(now);return Number.isNaN(d.getTime())?now.slice(0,10):new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);})()/* SR_LOCAL_TIME */';
+html = patchB64Const(html, 'SMART_RETAIL_POS_MOBILE_B64', (posMobile) =>
+  mustReplaceOnce(posMobile, POS_MOBILE_UTC_DAY, POS_MOBILE_LOCAL_DAY, 'pos mobile sale day'));
+
 /* ---- "Yangi oynada ochish" opens the standalone ERP page ---------------
    The vendor popup is a blob: URL holding a second copy of the ERP whose
    localStorage is redirected (supabase-sync.js FRAME_BOOTSTRAP) to the

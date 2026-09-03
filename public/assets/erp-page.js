@@ -345,10 +345,64 @@
   } catch (_) { cachedProfile = null; }
   if (cachedProfile) seedErpAuth(cachedProfile.role, cachedProfile.name, stored.id, cachedProfile.modules);
 
+  /* Boot timing, so "the ERP is slow" can be answered with numbers from
+     the terminal that is slow. Milliseconds since navigation start, one
+     line in the console once the till is open, and kept on
+     window.smartRetailErpBootTiming for anyone reading it from outside. */
+  var bootMarks = {};
+  function mark(name) {
+    try { bootMarks[name] = Math.round(performance.now()); } catch (_) { /* no performance API */ }
+  }
+
   var domReady = new Promise(function (resolve) {
     if (document.readyState !== 'loading') resolve();
     else document.addEventListener('DOMContentLoaded', function () { resolve(); }, { once: true });
   });
+  domReady.then(function () {
+    mark('dom');
+    if (pendingAnnounce) { var held = pendingAnnounce; pendingAnnounce = null; announce(held[0], held[1]); }
+  });
+
+  /* The workspace fetch is the long pole of the boot (a live shop is
+     ~1.6 MB), and it used to wait for three things it does not depend on:
+     the session lookup, the profile round trip and the parse of this
+     2.3 MB document. It depends only on knowing WHICH workspace to fetch,
+     and the previous sign-in on this terminal cached that, so the fetch
+     now starts here, while the HTML is still parsing, and overlaps with
+     everything else. The profile, when it arrives, confirms the workspace;
+     if the cache was wrong (an account re-bound to another owner) nothing
+     has been written yet and the page simply starts over without it.
+
+     What must still wait for the fetch AND for the parse is running the
+     ERP's own scripts - see startWorkspaceStore(). */
+  var storeBoot = null;
+  var storeBootWorkspace = null;
+  var storeSubscribed = false;
+  function bootStore(workspace) {
+    if (storeBoot && storeBootWorkspace === workspace) return storeBoot;
+    storeBootWorkspace = workspace;
+    if (!storeSubscribed) {
+      storeSubscribed = true;
+      store.subscribe(function (state, label) { announce(state, label); });
+    }
+    mark('hydrate-start');
+    storeBoot = store.start(client, workspace, function () {
+      // Another terminal changed a key. Coalesce: a burst of remote
+      // rows should cost one re-render, not one per row.
+      window.clearTimeout(rerenderTimer);
+      rerenderTimer = window.setTimeout(rerenderErp, 150);
+    }, { exclude: [ANALYTICS_KEY] });
+    storeBoot.then(function () { mark('hydrated'); }, function () {
+      // A failed fetch is retried by startWorkspaceStore() with a fresh start().
+      storeBoot = null;
+      storeBootWorkspace = null;
+    });
+    return storeBoot;
+  }
+  // Not for an account the last sign-in found has no ERP: it is about to be
+  // sent to the analytics page, and the fetch would be wasted.
+  var cachedHasErp = !cachedProfile || !Array.isArray(cachedProfile.products) || cachedProfile.products.indexOf('erp') !== -1;
+  if (KV_MODE && cachedProfile && cachedProfile.workspace && cachedHasErp) bootStore(cachedProfile.workspace);
 
   document.addEventListener('DOMContentLoaded', function () {
     hookLogout();
@@ -504,8 +558,12 @@
     try { localStorage.setItem(WS_REVISION_KEY, String(revision)); } catch (_) { /* ignore */ }
   }
 
+  var pendingAnnounce = null;
   function announce(state, label) {
     try {
+      /* The store now reports while this document is still parsing; the
+         chip needs a body to sit in, so hold the latest state until then. */
+      if (!document.body) { pendingAnnounce = [state, label]; return; }
       if (!statusChip) {
         statusChip = document.createElement('div');
         statusChip.style.cssText = 'position:fixed;left:10px;bottom:10px;z-index:99990;padding:4px 10px;border-radius:14px;background:rgba(13,22,40,.85);color:#8ea0bd;font:600 10.5px -apple-system,"Segoe UI",sans-serif;pointer-events:none';
@@ -941,22 +999,25 @@
     try { if (typeof crm21Refresh === 'function') crm21Refresh(); } catch (_) { /* ignore */ }
   }
 
-  /* Deliberately gated on domReady, for the same reason the snapshot
-     restore was: the ERP's inline first-run initialisers must have run to
-     completion before the real data lands, or they reset it right after.
-     Everything they wrote in the meantime is discarded by hydrate(), which
-     is why nothing is sent to the database before this point. */
+  /* The fetch may already be running (bootStore() from the cached
+     workspace); otherwise it starts now. Running the ERP's scripts waits
+     for BOTH the fetch and the parse: the scripts read the store the
+     moment they run, and they need the document they render into. The
+     build marked them inert, so nothing of the ERP's runs before this and
+     nothing it writes can reach the database first - the pre-hydration
+     queue is discarded by hydrate() regardless. */
   function startWorkspaceStore(profile, session, attempt) {
     var workspace = profile.workspace_owner || session.user.id;
-    store.subscribe(function (state, label) { announce(state, label); });
-    return domReady
-      .then(function () {
-        return store.start(client, workspace, function () {
-          // Another terminal changed a key. Coalesce: a burst of remote
-          // rows should cost one re-render, not one per row.
-          window.clearTimeout(rerenderTimer);
-          rerenderTimer = window.setTimeout(rerenderErp, 150);
-        }, { exclude: [ANALYTICS_KEY] });
+    if (storeBoot && storeBootWorkspace !== workspace) {
+      /* The cached workspace was wrong. Nothing has been written, so the
+         cheapest correct move is a clean start without the cache. */
+      try { localStorage.removeItem(ERP_PROFILE_KEY); } catch (_) { /* ignore */ }
+      window.location.reload();
+      return new Promise(function () {});
+    }
+    return bootStore(workspace)
+      .then(function (count) {
+        return domReady.then(function () { return count; });
       })
       .then(function (count) {
         /* Only now is it safe to let the ERP run: every key it is about to
@@ -964,6 +1025,7 @@
            map, which the store refuses to let anything write until it
            arrives. */
         var executed = runDeferredScripts();
+        mark('scripts');
         /* These wrap functions the ERP itself defines, so the earlier
            attempt at DOMContentLoaded found nothing to wrap. */
         hookLogout();
@@ -983,8 +1045,17 @@
             }
           } catch (error) { console.warn('Employee management unavailable:', error.message); }
         }
-        rerenderErp();
+        /* No extra renderAll() here: the ERP's own DOMContentLoaded handler
+           (re-dispatched by runDeferredScripts) has just rendered every
+           screen from a store that was full BEFORE any of its code ran.
+           A second full render was measured as the single largest block
+           of main-thread time between "data arrived" and "till usable". */
         tryUnlock();
+        mark('unlocked');
+        try {
+          window.smartRetailErpBootTiming = bootMarks;
+          console.info('[sr-erp-boot] ' + JSON.stringify(bootMarks) + ' keys=' + count);
+        } catch (_) { /* ignore */ }
         announce('online', 'Bazaga ulangan \u00b7 ' + count + ' kalit');
         /* The rest of the workspace, now that the user has something to
            look at. Not awaited: the till is already usable without it. */
@@ -1025,8 +1096,12 @@
     // blocked account — only a successful read saying active=false (or
     // expired) may ever sign the user out. Retries with backoff instead.
     function fetchProfile(attempt) {
+      /* Every column rather than a list: the row is the caller's own, and
+         a column added by a migration the database has not received yet
+         (products, 2026-09-03) must not turn into a select that fails and
+         a till that never opens. */
       return client.from('profiles')
-        .select('username, active, expires_at, erp_role, workspace_owner, erp_modules')
+        .select('*')
         .eq('id', session.user.id).single()
         .then(function (profileResult) {
           if (!profileResult.data && profileResult.error) {
@@ -1054,8 +1129,51 @@
         var role = (profile.workspace_owner || profile.erp_role === 'STAFF') ? 'STAFF' : 'OWNER';
         var name = profile.username || session.user.email || '';
         var modules = Array.isArray(profile.erp_modules) ? profile.erp_modules : [];
+        /* Products (supabase/2026-09-03-products.sql): what this account
+           bought - 'analytics', 'erp' or both. An owner without the ERP
+           is sent to the analytics page; an owner with nothing at all
+           cannot be signed in anywhere. Staff inherit their owner's
+           products, which the database resolves (my_products()); the
+           server also treats staff of an owner without the ERP as
+           inactive, so this is the courteous version of a refusal that
+           would happen anyway. A database without the column yet grants
+           both, so nothing changes until the migration runs. */
+        var products = Array.isArray(profile.products) ? profile.products : ['analytics', 'erp'];
+        function leaveForMissingProduct() {
+          signingOut = true;
+          syncActive = false;
+          if (KV_MODE) { try { store.suspend(); } catch (_) { /* ignore */ } }
+          if (products.indexOf('analytics') !== -1) {
+            try {
+              localStorage.setItem(ERP_PROFILE_KEY, JSON.stringify({
+                id: session.user.id, role: role, name: name, modules: modules,
+                workspace: profile.workspace_owner || session.user.id, products: products
+              }));
+            } catch (_) { /* ignore */ }
+            window.location.replace('/');
+            return new Promise(function () {});
+          }
+          try { client.auth.signOut(); } catch (_) { /* ignore */ }
+          wipeLocalWorkspace();
+          purgeSupabaseStorage();
+          setAuthCookie('', 0);
+          window.location.replace('/login.html?session=noproduct');
+          return new Promise(function () {});
+        }
+        if (role === 'OWNER' && products.indexOf('erp') === -1) return leaveForMissingProduct();
+        var productCheck = Promise.resolve(true);
+        if (role === 'STAFF') {
+          productCheck = client.rpc('my_products').then(function (result) {
+            if (result.error || !Array.isArray(result.data)) return true; // pre-migration database
+            products = result.data;
+            return products.indexOf('erp') !== -1;
+          }, function () { return true; });
+        }
         try {
-          localStorage.setItem(ERP_PROFILE_KEY, JSON.stringify({ id: session.user.id, role: role, name: name, modules: modules }));
+          localStorage.setItem(ERP_PROFILE_KEY, JSON.stringify({
+            id: session.user.id, role: role, name: name, modules: modules,
+            workspace: profile.workspace_owner || session.user.id, products: products
+          }));
         } catch (_) { /* ignore */ }
         seedErpAuth(role, name, session.user.id, modules);
         tryUnlock();
@@ -1129,8 +1247,11 @@
               .then(function () { return initialPull(attempt + 1); });
           });
         }
-        if (KV_MODE) return startWorkspaceStore(profile, session).then(function () { return session; });
-        return initialPull(0).then(function () { return session; });
+        return productCheck.then(function (allowed) {
+          if (!allowed) { products = []; return leaveForMissingProduct(); }
+          if (KV_MODE) return startWorkspaceStore(profile, session).then(function () { return session; });
+          return initialPull(0).then(function () { return session; });
+        });
       });
   });
 })();
