@@ -13,7 +13,22 @@
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const STAFF_DOMAIN = (process.env.STAFF_EMAIL_DOMAIN || 'staff.sellersmart.uz').toLowerCase();
+/* Sanitised, not used raw: a value pasted into the Vercel dashboard can
+   carry a stray space or newline (invisible there) or a leading "@", and
+   Supabase Auth then refuses every staff address with "Unable to validate
+   email address: invalid format". Anything that is not a plain hostname
+   falls back to the default and is logged, so the Employees screen keeps
+   working while the variable gets fixed. */
+const DEFAULT_STAFF_DOMAIN = 'staff.sellersmart.uz';
+const STAFF_DOMAIN = (function () {
+  const raw = String(process.env.STAFF_EMAIL_DOMAIN || '').trim().replace(/^@+/, '').replace(/\.+$/, '').toLowerCase();
+  if (!raw) return DEFAULT_STAFF_DOMAIN;
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(raw)) {
+    console.warn('sr-staff: STAFF_EMAIL_DOMAIN is not a valid hostname, using the default', JSON.stringify({ value: process.env.STAFF_EMAIL_DOMAIN }));
+    return DEFAULT_STAFF_DOMAIN;
+  }
+  return raw;
+})();
 const MAX_STAFF = 30;
 
 const serviceHeaders = {
@@ -172,6 +187,11 @@ async function createStaff(ownerId, body) {
   } catch (error) {
     if (/already|registered|exists|duplicate/i.test(error.message)) {
       throw fail(409, `"${login}" logini band. Boshqa login tanlang.`);
+    }
+    // Say WHICH address was refused: the login is the owner's, the
+    // domain is ours, and only one of them can be at fault.
+    if (/validate email|email address/i.test(error.message)) {
+      throw fail(400, `Supabase "${login}@${STAFF_DOMAIN}" manzilini qabul qilmadi (${error.message}).`);
     }
     throw error;
   }
