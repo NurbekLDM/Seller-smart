@@ -300,6 +300,59 @@ function patchI18n(appHtml) {
 
 html = patchI18n(html);
 
+/* ---- Dark mode: Bootstrap's colour mode follows the ERP theme ----------
+   The ERP themes itself through data-theme and its own --text/--panel
+   tokens, but it also loads Bootstrap 5.3, which has a colour mode of its
+   own (data-bs-theme) and defaults to LIGHT. Anything the ERP left on a
+   Bootstrap default — a plain .table, a .text-muted note, DataTables'
+   "Ma'lumot yo'q" row — therefore rendered Bootstrap's light-mode text
+   (#000, rgba(33,37,41,.75)) on the ERP's dark panels: invisible.
+   Measured on a rendered copy: the CEO dashboard, WMS, POS, CRM,
+   customers, employees, settings and the Uzum calculators all had it.
+
+   Three edits to the base ERP payload: the html tag starts in Bootstrap's
+   dark mode, setupTheme() keeps both attributes in step, and Bootstrap's
+   tokens take the ERP palette in both modes so its components never fall
+   back to their own greys. Applied here rather than to public/erp.html,
+   which this build regenerates from the payload. */
+const ERP_THEME_TOKENS =
+  '/* Bootstrap 5.3 colour mode follows the ERP theme (setupTheme() sets\n' +
+  '   data-bs-theme beside data-theme), and its tokens take the ERP palette.\n' +
+  '   Without this, anything left on a Bootstrap default rendered Bootstrap\'s\n' +
+  '   light-mode greys on the dark panels. Specificity beats Bootstrap\'s own\n' +
+  '   [data-bs-theme] rules on purpose. */\n' +
+  'html[data-bs-theme="dark"], html[data-bs-theme="light"]{\n' +
+  '  --bs-body-color:var(--text); --bs-body-bg:var(--bg);\n' +
+  '  --bs-emphasis-color:var(--text); --bs-heading-color:var(--text);\n' +
+  '  --bs-secondary-color:var(--text-dim); --bs-tertiary-color:var(--text-mute);\n' +
+  '  --bs-border-color:var(--border);\n' +
+  '  --bs-link-color:var(--accent); --bs-link-hover-color:var(--accent-2);\n' +
+  '}\n' +
+  '.table{ --bs-table-color:var(--text); --bs-table-bg:transparent; --bs-table-border-color:var(--border); }\n' +
+  '.dataTables_empty, table.dataTable td.dataTables_empty, table.dataTable td.dt-empty{ color:var(--text-dim) !important; }\n';
+const ERP_THEME_PATCHES = [
+  ['<html lang="uz" data-theme="dark">',
+    '<html lang="uz" data-theme="dark" data-bs-theme="dark">',
+    'erp html tag'],
+  ["  document.documentElement.setAttribute('data-theme', saved);\n  updateThemeIcon(saved);",
+    "  document.documentElement.setAttribute('data-theme', saved);\n" +
+    "  // Bootstrap's own colour mode must follow, or its defaults render light-mode text on dark panels.\n" +
+    "  document.documentElement.setAttribute('data-bs-theme', saved);\n  updateThemeIcon(saved);",
+    'erp setupTheme initial'],
+  ["    document.documentElement.setAttribute('data-theme', next);\n    localStorage.setItem(DB_KEYS.theme, next);",
+    "    document.documentElement.setAttribute('data-theme', next);\n" +
+    "    document.documentElement.setAttribute('data-bs-theme', next);\n    localStorage.setItem(DB_KEYS.theme, next);",
+    'erp setupTheme toggle'],
+  ['  --shadow-lg:0 20px 50px -24px rgba(30,41,80,0.25);\n}\n*{box-sizing:border-box;}',
+    '  --shadow-lg:0 20px 50px -24px rgba(30,41,80,0.25);\n}\n' + ERP_THEME_TOKENS + '*{box-sizing:border-box;}',
+    'erp theme tokens']
+];
+function patchErpTheme(appHtml) {
+  return patchB64Const(appHtml, 'SMART_RETAIL_ERP_B64', (erp) =>
+    ERP_THEME_PATCHES.reduce((body, [needle, replacement, label]) => mustReplaceOnce(body, needle, replacement, label), erp));
+}
+html = patchErpTheme(html);
+
 const FILE_GUARD_PAYLOAD = 'SMART_RETAIL_ERP_FILE_UPLOAD_GUARD_B64';
 const FILE_GUARD_SLOW_SCAN = 'function scan(node){if(typeof document===\'undefined\')return;'
   + 'if(node&&node.nodeType===1&&node.matches?.(\'input[type="file"]\'))bindInput(node);'

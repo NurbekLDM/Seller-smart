@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="uz" data-theme="dark">
+<html lang="uz" data-theme="dark" data-bs-theme="dark">
 <head>
 <!-- SR_ERP_PAGE_BEGIN -->
 <script src="assets/app-config.js"></script>
@@ -51,6 +51,20 @@ html[data-theme="light"]{
   --ok-bg:rgba(34,199,122,0.12); --warn-bg:rgba(245,166,35,0.14); --danger-bg:rgba(240,82,107,0.12);
   --shadow-lg:0 20px 50px -24px rgba(30,41,80,0.25);
 }
+/* Bootstrap 5.3 colour mode follows the ERP theme (setupTheme() sets
+   data-bs-theme beside data-theme), and its tokens take the ERP palette.
+   Without this, anything left on a Bootstrap default rendered Bootstrap's
+   light-mode greys on the dark panels. Specificity beats Bootstrap's own
+   [data-bs-theme] rules on purpose. */
+html[data-bs-theme="dark"], html[data-bs-theme="light"]{
+  --bs-body-color:var(--text); --bs-body-bg:var(--bg);
+  --bs-emphasis-color:var(--text); --bs-heading-color:var(--text);
+  --bs-secondary-color:var(--text-dim); --bs-tertiary-color:var(--text-mute);
+  --bs-border-color:var(--border);
+  --bs-link-color:var(--accent); --bs-link-hover-color:var(--accent-2);
+}
+.table{ --bs-table-color:var(--text); --bs-table-bg:transparent; --bs-table-border-color:var(--border); }
+.dataTables_empty, table.dataTable td.dataTables_empty, table.dataTable td.dt-empty{ color:var(--text-dim) !important; }
 *{box-sizing:border-box;}
 body{
   font-family:var(--font-display); background:
@@ -1720,11 +1734,14 @@ document.addEventListener('DOMContentLoaded', () => {
 function setupTheme() {
   const saved = localStorage.getItem(DB_KEYS.theme) || 'dark';
   document.documentElement.setAttribute('data-theme', saved);
+  // Bootstrap's own colour mode must follow, or its defaults render light-mode text on dark panels.
+  document.documentElement.setAttribute('data-bs-theme', saved);
   updateThemeIcon(saved);
   document.getElementById('themeToggle').addEventListener('click', () => {
     const cur = document.documentElement.getAttribute('data-theme');
     const next = cur === 'dark' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', next);
+    document.documentElement.setAttribute('data-bs-theme', next);
     localStorage.setItem(DB_KEYS.theme, next);
     updateThemeIcon(next);
     Object.values(charts).forEach(c => c && c.destroy());
