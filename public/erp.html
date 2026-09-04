@@ -3034,7 +3034,9 @@ document.addEventListener('DOMContentLoaded',()=>{
 .wms25-cell{min-height:86px;border-radius:10px;border:1px solid var(--border);background:var(--panel-strong);padding:8px;cursor:pointer;transition:.15s;overflow:hidden}
 .wms25-cell:hover{transform:translateY(-2px);border-color:var(--accent)}
 .wms25-cell.full{background:var(--ok-bg);border-color:rgba(34,199,122,.55)}
-.wms25-cell .code{font-family:var(--font-mono);font-weight:800;font-size:11px}
+.wms25-cell .code{font-family:var(--font-mono);font-weight:800;font-size:11px;color:#fff}
+html[data-theme="light"] .wms25-cell .code{color:#111}
+.wms25-cell .v19-capacity-badge+.code{margin-top:24px}
 .wms25-cell .sku{font-family:var(--font-mono);font-size:9.5px;color:var(--ok);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wms25-cell .cat{font-size:9.5px;color:var(--text-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wms25-cell .empty-label{font-size:10px;color:var(--text-mute);margin-top:8px}

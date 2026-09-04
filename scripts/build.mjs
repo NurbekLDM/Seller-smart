@@ -343,9 +343,19 @@ const ERP_THEME_PATCHES = [
     "    document.documentElement.setAttribute('data-theme', next);\n" +
     "    document.documentElement.setAttribute('data-bs-theme', next);\n    localStorage.setItem(DB_KEYS.theme, next);",
     'erp setupTheme toggle'],
-  ['  --shadow-lg:0 20px 50px -24px rgba(30,41,80,0.25);\n}\n*{box-sizing:border-box;}',
+  ['  --shadow-lg:0 20px 50px -24px rgba(30,41,80,0.25);\n}\n' + '*{box-sizing:border-box;}',
     '  --shadow-lg:0 20px 50px -24px rgba(30,41,80,0.25);\n}\n' + ERP_THEME_TOKENS + '*{box-sizing:border-box;}',
-    'erp theme tokens']
+    'erp theme tokens'],
+  /* WMS zone cell cards. The admin map (v19) drops an absolutely positioned
+     "MAX 500" badge and a checkbox onto the top edge of every card, right
+     where the cell code sits, so the two texts print on top of each other.
+     Move the code below that row when the badge is present, and give it an
+     explicit colour per theme: white on dark, black on light. */
+  ['.wms25-cell .code{font-family:var(--font-mono);font-weight:800;font-size:11px}',
+    '.wms25-cell .code{font-family:var(--font-mono);font-weight:800;font-size:11px;color:#fff}\n' +
+    'html[data-theme="light"] .wms25-cell .code{color:#111}\n' +
+    '.wms25-cell .v19-capacity-badge+.code{margin-top:24px}',
+    'erp wms cell code']
 ];
 function patchErpTheme(appHtml) {
   return patchB64Const(appHtml, 'SMART_RETAIL_ERP_B64', (erp) =>
