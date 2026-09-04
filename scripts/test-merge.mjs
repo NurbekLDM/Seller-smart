@@ -203,5 +203,93 @@ console.log('\nworkspace store — list diff');
   check('unparsable — refuses to diff', listDiff('not json', json([{ id: 'A' }])), null);
 }
 
+/* What a flush actually sends, against a fake database that implements
+   save_workspace_kv's contract (accept when `expected` matches, otherwise
+   conflict and hand back the current value).
+
+   Measured on a live shop: a batch holding one small key and one large
+   key sent the small key TWICE — the second time appended to the
+   already-sent payload with a revision the first write had just moved
+   past — so it conflicted against its own value and the merge's delta
+   rule applied the edit again. A stock edit of −278 ran 41 rounds and
+   left −11 198 units on the shelf. The rounds below must show one write
+   per key, no conflicts, and the value the app wrote. */
+console.log('\nworkspace store — flush against a fake database');
+
+function fakeDatabase(initial) {
+  const rows = new Map(Object.entries(initial).map(([k, v]) => [k, { value: v, revision: 1 }]));
+  const log = [];
+  let failNext = false;
+  const builder = (result) => {
+    const b = {};
+    ['select', 'eq', 'neq', 'in'].forEach((m) => { b[m] = () => b; });
+    b.range = async () => result;
+    return b;
+  };
+  const client = {
+    from: () => builder({ data: [...rows].map(([key, r]) => ({ key, value: r.value, revision: r.revision })), error: null }),
+    rpc: async (name, args) => {
+      if (name !== 'save_workspace_kv') return { data: null, error: { code: 'PGRST202', message: 'Could not find the function' } };
+      const data = args.entries.map((entry) => {
+        const row = rows.get(entry.key);
+        log.push({ key: entry.key, expected: entry.expected, revision: row ? row.revision : null });
+        if (!row) { rows.set(entry.key, { value: entry.value, revision: 1 }); return { key: entry.key, revision: 1, conflicted: false, current_value: null }; }
+        if (entry.expected === row.revision) { row.value = entry.value; row.revision += 1; return { key: entry.key, revision: row.revision, conflicted: false, current_value: null }; }
+        return { key: entry.key, revision: row.revision, conflicted: true, current_value: row.value };
+      });
+      if (failNext) { failNext = false; throw new Error('Failed to fetch'); }
+      return { data, error: null };
+    }
+  };
+  return { client, rows, log, loseNextAcknowledgement() { failNext = true; } };
+}
+
+const settle = (store, ms) => new Promise((resolve) => {
+  const started = Date.now();
+  (function tick() {
+    const s = store.status();
+    if ((s.unsent === 0 && !s.flushing) || Date.now() - started > ms) resolve(s);
+    else setTimeout(tick, 25);
+  })();
+});
+
+{
+  const store = loadStore();
+  const shim = store.shim();
+  // A list large enough to take the delta path (>= 64 KB), like srerp_cells.
+  const cells = Array.from({ length: 4000 }, (_, i) => ({ id: 'C-' + String(i).padStart(5, '0'), code: 'E5-R05-Y' + i, usedQty: 0 }));
+  const db = fakeDatabase({
+    srerp_products: json([{ id: 'P', sku: 'SPOR-00001', qty: 478 }]),
+    srerp_cells: json(cells)
+  });
+  await store.start(db.client, 'ws-test', null, {});
+
+  // The mobile warehouse screen: set the product to 200 and re-sync its cell.
+  shim.setItem('srerp_products', json([{ id: 'P', sku: 'SPOR-00001', qty: 200 }]));
+  cells[48].usedQty = 200;
+  shim.setItem('srerp_cells', json(cells));
+  const first = await settle(store, 5000);
+
+  const productWrites = db.log.filter((e) => e.key === 'srerp_products');
+  check('small key beside a large one — sent once, not twice', productWrites.length, 1);
+  check('no write conflicted against its own value',
+    db.log.filter((e) => e.expected !== e.revision).length, 0);
+  check('the edit is applied once: 478 → 200, not 200 + (200 − 478)',
+    JSON.parse(db.rows.get('srerp_products').value)[0].qty, 200);
+  check('the large key arrived too', JSON.parse(db.rows.get('srerp_cells').value)[48].usedQty, 200);
+  check('queue drained', first.unsent, 0);
+
+  /* The write lands, the acknowledgement does not (a dropped response).
+     The retry finds the database already holding exactly what it sent —
+     an acceptance, not a conflict, and nothing to apply again. */
+  db.loseNextAcknowledgement();
+  shim.setItem('srerp_products', json([{ id: 'P', sku: 'SPOR-00001', qty: 150 }]));
+  const second = await settle(store, 6000);
+  check('lost acknowledgement — value stands at 150, not 150 + (150 − 200)',
+    JSON.parse(db.rows.get('srerp_products').value)[0].qty, 150);
+  check('queue drained after the retry', second.unsent, 0);
+  store.forget();
+}
+
 console.log(failures ? `\n${failures} test(s) failed` : '\nall tests passed');
 process.exit(failures ? 1 : 0);

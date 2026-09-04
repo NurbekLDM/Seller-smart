@@ -284,6 +284,12 @@
     if (!isPlainObject(baseItem) || !isPlainObject(mine) || !isPlainObject(theirs)) return mine;
     if (same(mine, baseItem)) return theirs;
     if (same(theirs, baseItem)) return mine;
+    /* NOTE: mine === theirs is NOT a shortcut here. Two tills that each
+       sold one unit both write 9 from 10, and 8 is the truth — that is the
+       whole point of the delta rule. The one case that must not reach this
+       function is this terminal's OWN write coming back as "theirs" (a
+       retried request, a lost response): the merge cannot tell the two
+       apart, so flush() recognises its own value before merging. */
     var out = {};
     var fields = new Set(Object.keys(baseItem).concat(Object.keys(mine), Object.keys(theirs)));
     fields.forEach(function (field) {
@@ -409,6 +415,10 @@
     var batch = new Map(dirty);
     var upserts = [];
     var deletes = [];
+    /* What this round actually sends, per key. An accepted result must
+       record THAT as the agreed state — not whatever the app wrote into
+       memory while the request was out, which has not been sent at all. */
+    var sent = new Map();
     batch.forEach(function (op, key) {
       if (op === 'delete') { deletes.push(key); return; }
       var value = memory.get(key);
@@ -425,6 +435,7 @@
         return;
       }
       upserts.push({ workspace_id: workspaceId, key: key, value: value });
+      sent.set(key, value);
     });
     announce('syncing', 'Saqlanmoqda...');
     try {
@@ -455,8 +466,20 @@
 
         /* Deltas go to their own function. If that one is missing — its
            migration not applied yet — resend those keys whole rather than
-           losing them, and stop trying. */
-        if (conditionalWrites && deltaPayload.length) {
+           losing them, and stop trying.
+
+           The whole-value resend is a request of ITS OWN, carrying only the
+           delta keys. It used to append them to `payload` — the array the
+           first RPC had already sent — and send the lot again, so every
+           small key reached the server twice, the second time built on a
+           revision the first write had just moved past. Each one then
+           conflicted against its own value, the merge re-applied the edit
+           on top of it, the conflict re-dirtied the batch, and the round
+           trip repeated every few seconds for as long as the tab stayed
+           open. Measured on a live shop: a stock edit of −278 applied 41
+           times, and the first RPC's accepted results thrown away each
+           time (`written = resent`). Keep them, and add to them. */
+        if (conditionalWrites && !written.error && deltaPayload.length) {
           var delta = deltaWrites
             ? await client.rpc('save_workspace_kv_delta', { entries: deltaPayload })
             : { data: null, error: { code: 'PGRST202' } };
@@ -467,12 +490,12 @@
               console.warn('Workspace store: save_workspace_kv_delta is missing; '
                 + 'sending whole values until its migration is applied.');
             }
-            deltaPayload.forEach(function (entry) {
-              payload.push({ key: entry.key, value: memory.get(entry.key), expected: entry.expected });
+            var wholePayload = deltaPayload.map(function (entry) {
+              return { key: entry.key, value: sent.get(entry.key), expected: entry.expected };
             });
-            var resent = await client.rpc('save_workspace_kv', { entries: payload });
+            var resent = await client.rpc('save_workspace_kv', { entries: wholePayload });
             if (resent.error) throw decorate(resent.error);
-            written = resent;
+            written = { data: (written.data || []).concat(resent.data || []), error: null };
           } else if (delta.error) {
             throw decorate(delta.error);
           } else if (!written.error) {
@@ -505,9 +528,14 @@
         var conflicts = [];
         (written.data || []).forEach(function (result) {
           if (result.conflicted) { conflicts.push(result); return; }
-          // Accepted: this is now the agreed state for that key.
-          base.set(result.key, { value: memory.get(result.key), revision: result.revision });
-          if (dirty.get(result.key) === 'set') dirty.delete(result.key);
+          // Accepted: what was SENT is now the agreed state for that key.
+          var agreed = sent.has(result.key) ? sent.get(result.key) : memory.get(result.key);
+          base.set(result.key, { value: agreed, revision: result.revision });
+          /* Clean only if the app has not written the key again while the
+             request was out. A newer value stays queued and goes on the
+             next round, built on the revision just returned — marking it
+             clean here silently dropped it. */
+          if (dirty.get(result.key) === 'set' && memory.get(result.key) === agreed) dirty.delete(result.key);
         });
 
         if (conflicts.length) {
@@ -517,6 +545,21 @@
               ? result.current_value : JSON.stringify(result.current_value);
             var mine = memory.get(result.key);
             if (mine === undefined) { dirty.delete(result.key); return; }
+            /* The database holds, byte for byte, what this round sent: the
+               write landed and only the acknowledgement was lost (a retry,
+               a dropped response). That is an acceptance, not a conflict.
+               Merging it would hand the delta rule this terminal's own
+               change as "theirs" and apply it a second time — on a live
+               shop that turned a stock edit of −278 into −11 198 over 41
+               rounds. Two tills producing an identical whole value in the
+               same instant would need identical timestamps in every row
+               they touched; treating that as one write is the right call
+               for that too. */
+            if (theirs === sent.get(result.key)) {
+              base.set(result.key, { value: theirs, revision: result.revision });
+              if (memory.get(result.key) === theirs) dirty.delete(result.key);
+              return;
+            }
             var merged = threeWayMerge(known ? known.value : null, mine, theirs);
             memory.set(result.key, merged);
             seen.add(result.key);
