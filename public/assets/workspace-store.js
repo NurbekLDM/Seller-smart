@@ -164,6 +164,37 @@
      went with it. */
   var base = new Map();
 
+  /* Every write names itself, so the server can tell a retry of a write
+     that landed from a genuine conflict — see
+     supabase/2026-09-04-workspace-kv-write-ids.sql. The id is per key and
+     per VALUE: resending the same value reuses it, a new value gets a new
+     one.
+       writeIds: key -> { id, value } for the value most recently sent
+       sentIds:  key -> the last few ids this terminal sent, so a conflict
+                 reply naming one of them is recognised as our own earlier
+                 write rather than merged as another till's. */
+  var writeIds = new Map();
+  var sentIds = new Map();
+  var SENT_IDS_KEPT = 16;
+  function newWriteId() {
+    return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10) + '-' + TAB_ID;
+  }
+  function writeIdFor(key, value) {
+    var prior = writeIds.get(key);
+    var id = prior && prior.value === value ? prior.id : newWriteId();
+    writeIds.set(key, { id: id, value: value });
+    var recent = sentIds.get(key) || [];
+    if (recent.indexOf(id) === -1) {
+      recent.push(id);
+      if (recent.length > SENT_IDS_KEPT) recent.shift();
+      sentIds.set(key, recent);
+    }
+    return id;
+  }
+  function isOwnWriteId(key, id) {
+    return !!id && (sentIds.get(key) || []).indexOf(id) !== -1;
+  }
+
   /* Whether this database has the revisions migration. Flipped off by the
      first flush that finds save_workspace_kv missing. */
   var conditionalWrites = true;
@@ -419,6 +450,7 @@
        record THAT as the agreed state — not whatever the app wrote into
        memory while the request was out, which has not been sent at all. */
     var sent = new Map();
+    var ids = new Map();   // key -> the write id this round sends
     batch.forEach(function (op, key) {
       if (op === 'delete') { deletes.push(key); return; }
       var value = memory.get(key);
@@ -436,6 +468,7 @@
       }
       upserts.push({ workspace_id: workspaceId, key: key, value: value });
       sent.set(key, value);
+      ids.set(key, writeIdFor(key, value));
     });
     announce('syncing', 'Saqlanmoqda...');
     try {
@@ -456,8 +489,8 @@
                and costs a second code path, so fall back. */
             if (diff && JSON.stringify(diff).length > String(row.value).length / 2) diff = null;
           }
-          if (diff) deltaPayload.push({ key: row.key, expected: expected, changed: diff.changed, removed: diff.removed });
-          else payload.push({ key: row.key, value: row.value, expected: expected });
+          if (diff) deltaPayload.push({ key: row.key, expected: expected, write_id: ids.get(row.key), changed: diff.changed, removed: diff.removed });
+          else payload.push({ key: row.key, value: row.value, expected: expected, write_id: ids.get(row.key) });
         });
 
         var written = conditionalWrites
@@ -491,7 +524,7 @@
                 + 'sending whole values until its migration is applied.');
             }
             var wholePayload = deltaPayload.map(function (entry) {
-              return { key: entry.key, value: sent.get(entry.key), expected: entry.expected };
+              return { key: entry.key, value: sent.get(entry.key), expected: entry.expected, write_id: entry.write_id };
             });
             var resent = await client.rpc('save_workspace_kv', { entries: wholePayload });
             if (resent.error) throw decorate(resent.error);
@@ -535,7 +568,10 @@
              request was out. A newer value stays queued and goes on the
              next round, built on the revision just returned — marking it
              clean here silently dropped it. */
-          if (dirty.get(result.key) === 'set' && memory.get(result.key) === agreed) dirty.delete(result.key);
+          if (dirty.get(result.key) === 'set' && memory.get(result.key) === agreed) {
+            dirty.delete(result.key);
+            writeIds.delete(result.key);
+          }
         });
 
         if (conflicts.length) {
@@ -558,6 +594,19 @@
             if (theirs === sent.get(result.key)) {
               base.set(result.key, { value: theirs, revision: result.revision });
               if (memory.get(result.key) === theirs) dirty.delete(result.key);
+              return;
+            }
+            /* The row names a write of OURS as what it holds — an earlier
+               send whose acknowledgement never arrived, and which the app
+               has since built on. What we hold is newer than it, and was
+               derived from it, so the right base is that write, not the
+               older one this terminal remembers. Rebase, retry, no merge.
+               (Needs the write-ids migration; without it the reply has no
+               id and this is skipped.) */
+            if (isOwnWriteId(result.key, result.current_write_id)) {
+              base.set(result.key, { value: theirs, revision: result.revision });
+              dirty.set(result.key, 'set');
+              scheduleFlush(250);
               return;
             }
             var merged = threeWayMerge(known ? known.value : null, mine, theirs);

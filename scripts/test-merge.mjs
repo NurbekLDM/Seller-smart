@@ -216,8 +216,12 @@ console.log('\nworkspace store — list diff');
    per key, no conflicts, and the value the app wrote. */
 console.log('\nworkspace store — flush against a fake database');
 
-function fakeDatabase(initial) {
-  const rows = new Map(Object.entries(initial).map(([k, v]) => [k, { value: v, revision: 1 }]));
+/* `writeIds` says whether the fake speaks the write-ids contract of
+   supabase/2026-09-04-workspace-kv-write-ids.sql; off, it behaves as the
+   original save_workspace_kv did, which is what the store must also cope
+   with until that migration is applied. */
+function fakeDatabase(initial, { writeIds = false } = {}) {
+  const rows = new Map(Object.entries(initial).map(([k, v]) => [k, { value: v, revision: 1, write_id: null }]));
   const log = [];
   let failNext = false;
   const builder = (result) => {
@@ -226,16 +230,23 @@ function fakeDatabase(initial) {
     b.range = async () => result;
     return b;
   };
+  const reply = (key, row, conflicted) => {
+    const out = { key, revision: row.revision, conflicted, current_value: conflicted ? row.value : null };
+    if (writeIds) out.current_write_id = conflicted ? row.write_id : null;
+    return out;
+  };
   const client = {
     from: () => builder({ data: [...rows].map(([key, r]) => ({ key, value: r.value, revision: r.revision })), error: null }),
     rpc: async (name, args) => {
       if (name !== 'save_workspace_kv') return { data: null, error: { code: 'PGRST202', message: 'Could not find the function' } };
       const data = args.entries.map((entry) => {
         const row = rows.get(entry.key);
-        log.push({ key: entry.key, expected: entry.expected, revision: row ? row.revision : null });
-        if (!row) { rows.set(entry.key, { value: entry.value, revision: 1 }); return { key: entry.key, revision: 1, conflicted: false, current_value: null }; }
-        if (entry.expected === row.revision) { row.value = entry.value; row.revision += 1; return { key: entry.key, revision: row.revision, conflicted: false, current_value: null }; }
-        return { key: entry.key, revision: row.revision, conflicted: true, current_value: row.value };
+        const wid = writeIds ? entry.write_id || null : null;
+        log.push({ key: entry.key, expected: entry.expected, revision: row ? row.revision : null, write_id: entry.write_id });
+        if (!row) { rows.set(entry.key, { value: entry.value, revision: 1, write_id: wid }); return reply(entry.key, rows.get(entry.key), false); }
+        if (wid && row.write_id === wid) return reply(entry.key, row, false);   // a retry of a write that landed
+        if (entry.expected === row.revision) { row.value = entry.value; row.revision += 1; row.write_id = wid; return reply(entry.key, row, false); }
+        return reply(entry.key, row, true);
       });
       if (failNext) { failNext = false; throw new Error('Failed to fetch'); }
       return { data, error: null };
@@ -288,6 +299,34 @@ const settle = (store, ms) => new Promise((resolve) => {
   check('lost acknowledgement — value stands at 150, not 150 + (150 − 200)',
     JSON.parse(db.rows.get('srerp_products').value)[0].qty, 150);
   check('queue drained after the retry', second.unsent, 0);
+  store.forget();
+}
+
+/* The case the values alone cannot settle: the acknowledgement is lost AND
+   the app writes again before the retry. The retry's value differs from
+   what the database holds, so byte comparison says nothing; without the
+   write id the merge would compute 150 + (140 − 200) = 90. With it the
+   server names the write it holds, the store recognises its own, rebases
+   on it and resends — 140, applied once. */
+{
+  const store = loadStore();
+  const shim = store.shim();
+  const db = fakeDatabase({ srerp_products: json([{ id: 'P', sku: 'SPOR-00001', qty: 478 }]) }, { writeIds: true });
+  await store.start(db.client, 'ws-test', null, {});
+
+  shim.setItem('srerp_products', json([{ id: 'P', sku: 'SPOR-00001', qty: 200 }]));
+  await settle(store, 5000);
+  check('every write names itself', db.log.every((e) => typeof e.write_id === 'string' && e.write_id.length > 8), true);
+
+  db.loseNextAcknowledgement();
+  shim.setItem('srerp_products', json([{ id: 'P', sku: 'SPOR-00001', qty: 150 }]));
+  await new Promise((resolve) => setTimeout(resolve, 700));   // the write has landed, the retry has not fired
+  check('the write landed although its acknowledgement was lost', JSON.parse(db.rows.get('srerp_products').value)[0].qty, 150);
+  shim.setItem('srerp_products', json([{ id: 'P', sku: 'SPOR-00001', qty: 140 }]));
+  const done = await settle(store, 6000);
+  check('lost acknowledgement, then a further edit — 140 stands, not 150 + (140 − 200)',
+    JSON.parse(db.rows.get('srerp_products').value)[0].qty, 140);
+  check('queue drained', done.unsent, 0);
   store.forget();
 }
 
