@@ -1,0 +1,78 @@
+# SmartSeller override for the official self-hosted Supabase stack.
+#
+# Copied into the Supabase project directory by deploy/install.sh and
+# enabled with `sh run.sh config add smartseller`, so it is layered on top of
+# Supabase's own docker-compose.yml and every `sh run.sh ...` command
+# (start, stop, logs, pull) manages the app together with the database.
+#
+# Variables come from the Supabase project's .env (ANON_KEY, SERVICE_ROLE_KEY
+# are Supabase's own; APP_DOMAIN, ACME_EMAIL, SMARTSELLER_APP_DIR and
+# STAFF_EMAIL_DOMAIN are added by install.sh).
+
+services:
+  # Nothing of Supabase is published to the internet directly: the browser
+  # reaches Auth, PostgREST and Realtime through Caddy on 443. The gateway
+  # stays on loopback so the Studio dashboard can still be opened through an
+  # SSH tunnel (ssh -L 8000:127.0.0.1:8000 <server>, then http://localhost:8000).
+  api-gw:
+    ports: !override
+      - "127.0.0.1:8000:8000/tcp"
+
+  # The pooler publishes Postgres on the host by default; keep it on loopback.
+  supavisor:
+    ports: !override
+      - "127.0.0.1:${POSTGRES_PORT}:5432"
+      - "127.0.0.1:${POOLER_PROXY_PORT_TRANSACTION}:6543"
+
+  app:
+    container_name: smartseller-app
+    image: node:22-alpine
+    restart: unless-stopped
+    user: node
+    working_dir: /app
+    command: ["node", "server/index.mjs"]
+    volumes:
+      - ${SMARTSELLER_APP_DIR:-/opt/smartseller/app}:/app:ro
+    environment:
+      PORT: "3000"
+      # Server-side calls stay inside the docker network.
+      SUPABASE_URL: http://api-gw:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      # The browser talks to Supabase on the app's own origin (Caddy routes
+      # /auth/v1, /rest/v1 and /realtime/v1 to the gateway).
+      PUBLIC_SUPABASE_URL: https://${APP_DOMAIN}
+      STAFF_EMAIL_DOMAIN: ${STAFF_EMAIL_DOMAIN:-staff.sellersmart.uz}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      api-gw:
+        condition: service_healthy
+
+  caddy:
+    container_name: smartseller-caddy
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ${SMARTSELLER_APP_DIR:-/opt/smartseller/app}/deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - smartseller_caddy_data:/data
+      - smartseller_caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+      api-gw:
+        condition: service_healthy
+
+volumes:
+  smartseller_caddy_data:
+  smartseller_caddy_config:

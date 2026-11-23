@@ -1,0 +1,24 @@
+# One origin for everything: the app and the Supabase API share the domain,
+# so the browser needs no CORS and the CSP's 'self' covers the API.
+# Caddy obtains and renews the TLS certificate for APP_DOMAIN by itself
+# (the domain's A record must point at this server, ports 80/443 open).
+{
+	email {$ACME_EMAIL}
+}
+
+{$APP_DOMAIN} {
+	encode zstd gzip
+
+	# Only the three Supabase APIs the app uses. Studio, Storage, Functions
+	# and the rest of the gateway are not reachable from the internet.
+	@supabase path /auth/v1/* /rest/v1/* /realtime/v1/*
+	handle @supabase {
+		reverse_proxy api-gw:8000
+	}
+
+	handle {
+		reverse_proxy app:3000
+	}
+
+	header -server
+}
