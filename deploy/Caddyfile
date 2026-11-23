@@ -23,6 +23,22 @@
 	header -server
 }
 
+# SellerSmart ERP 119.3 — the vendor's standalone (offline, browser-storage)
+# ERP. On its own origin on purpose: on sellersmart.uz it would share
+# localStorage/IndexedDB keys with the live Supabase-synced app. Same login
+# as Kartochka Studio. Needs a DNS A record (erp.<domain> → this server).
+erp.{$APP_DOMAIN} {
+	encode zstd gzip
+	basic_auth {
+		{$KARTOCHKA_USER} {$KARTOCHKA_HASH}
+	}
+	root * /srv/releases/sellersmart-erp-119.3
+	rewrite / /SellerSmart_ERP_119_3.html
+	file_server
+	header Cache-Control "no-cache"
+	header -server
+}
+
 # Kartochka Studio. Needs its own DNS A record (kartochka.<domain> → this
 # server). Behind a password: it fetches pages for whoever uses it.
 kartochka.{$APP_DOMAIN} {

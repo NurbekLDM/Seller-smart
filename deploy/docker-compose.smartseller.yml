@@ -91,6 +91,7 @@ services:
         exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
     volumes:
       - ${SMARTSELLER_APP_DIR:-/opt/smartseller/app}/deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${SMARTSELLER_APP_DIR:-/opt/smartseller/app}/releases:/srv/releases:ro
       - smartseller_caddy_data:/data
       - smartseller_caddy_config:/config
     depends_on:
