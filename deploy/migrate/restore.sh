@@ -110,7 +110,7 @@ echo "===> Comparing row counts"
 fail=0
 while IFS="$(printf '\t')" read -r table expected; do
     [ -n "$table" ] || continue
-    got=$(psql_db -Atc "select count(*) from $table" 2>/dev/null || echo missing)
+    got=$(psql_db -Atc "select count(*) from $table" </dev/null 2>/dev/null || echo missing)
     mark="ok"; [ "$got" = "$expected" ] || { mark="MISMATCH"; fail=1; }
     printf '    %-45s %10s %10s  %s\n' "$table" "$expected" "$got" "$mark"
 done < "$DUMP/counts.tsv"
