@@ -1,0 +1,111 @@
+SellerSmart — Kartochka Studio, 6-versiya
+Uzum yoki boshqa ochiq saytdagi havoladan UZ / RU kartochka
+
+1. ISHGA TUSHIRISH
+Arxivni to‘liq oching. Python 3.9 yoki yangi versiyasi kerak.
+Windows: ISHGA_TUSHIRISH.bat faylini oching.
+macOS / Linux: papkada sh ISHGA_TUSHIRISH.sh buyrug‘ini bajaring.
+Brauzer ochilmasa, ishga tushirish oynasidagi http://127.0.0.1:... manzilini oching. Ish vaqtida shu oynani yopmang. Qo‘shimcha Python paketlari kerak emas.
+
+2. MODEL TANLASH
+OpenAI API kalitini kiriting. GPT-6 yoki GPT-5 oilasini, keyin aniq modelni tanlang:
+• GPT-6: GPT-6.1 Sol, GPT-6 Astra, GPT-6.1 Terra, GPT-6 Luna.
+• GPT-5: GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna.
+Boshlang‘ich tanlov — GPT-6.1 Sol. «Modellarni tekshirish» API loyihangizdagi model ro‘yxatini o‘qiydi. Ro‘yxatda yo‘q model belgilanadi va tanlab bo‘lmaydi. Kalit o‘zgarsa, tekshiruv natijasi tozalanadi. Ruxsatlar Responses va veb-qidiruv so‘rovlari paytida ham tekshiriladi. Ro‘yxatni o‘qishga ruxsat berilmasa, tanlangan modelni odatdagi jarayon orqali ishlatib ko‘rishingiz mumkin.
+Tanlangan model kartochka matni, kerak bo‘lsa manbani qidirish va suratdagi mahsulot chegaralarini aniqlash uchun ishlatiladi. Boshqa modelga yashirin almashtirilmaydi. Natijada ishlatilgan model ko‘rsatiladi.
+
+3. HAVOLADAN TAYYORLASH
+• Yuqoridan «Uzum havolasidan» yoki yangi «Boshqa saytdan» oynasini tanlang.
+• Uzum oynasida mahsulot havolasini kiriting; skuId bo‘lsa saqlang. Boshqa sayt oynasida o‘sha mahsulotning aniq HTTP/HTTPS havolasini kiriting.
+• Uchta promptdan birini tanlang: sotuv, SEO yoki texnik tavsif.
+• Batafsillik darajasini tanlang: Standart, Batafsil yoki Ekspert.
+• Stiker/emoji, belgilar va kopiraytingni alohida yoqing yoki o‘chiring.
+• «Mahsulot xususiyatlarini yaratish»ni yoqing yoki o‘chiring.
+• Zarur tuzatishlarni qo‘shimcha promptga kiriting.
+• «3–4 ta SEO kalit so‘zini tekshirish»ni yoqing yoki o‘chiring.
+• «Rasm tayyorlash»ni yoqing yoki o‘chiring. Yoqilgan bo‘lsa PRO yoki oddiy rejimni, rasm sonini va kerak bo‘lsa qo‘shimcha rasm promptini tanlang.
+• «Jarayonni boshlash»ni bosing.
+Manba ochilmasa, yoqilgan sozlamaga ko‘ra OpenAI aynan shu havolani veb-qidiruv orqali tekshiradi. Hali ham ma’lumot yetarli bo‘lmasa, manba saytdan asl nom va tavsifni ko‘chirib kiritish maydoni ochiladi. Bunday manba alohida belgilanadi.
+Boshlang‘ich 1 dona va 2 dona variantlarini o‘zgartirish, o‘chirish yoki yangi variantlar qo‘shish mumkin. Narx va qoldiq har bir SKU uchun Uzum kabinetida alohida kiritiladi.
+
+YANGI: RASM PROMPTI, RASM SONI VA LOGO
+• «Rasm tayyorlash» ostida rasm sonini 1–10 oralig‘ida kiriting. PRO va oddiy rejimlar bir xil tanlangan sondagi kompozitsiyalarni yaratadi.
+• «Rasm uchun qo‘shimcha prompt» maydonida fon ranglari, umumiy uslub, mahsulotning chap/o‘ng/markazda joylashuvi, kattaligi va matn hajmini yozing. Masalan: «Och ko‘k fon, mahsulot chapda katta, o‘ngda qisqa ruscha matn, minimal uslub».
+• «Promptni saqlash»: nom bilan saqlaydi. Ro‘yxatdan prompt tanlang, «Tahrirlash» bilan matn yoki nomini o‘zgartiring va qayta saqlang.
+• «Promptni olib tashlash» faol promptni tozalaydi. «Saqlanganni o‘chirish» tanlangan promptni ro‘yxatdan ham o‘chiradi. Ko‘pi bilan 30 ta prompt, har birida 2000 belgigacha.
+• Saqlangan promptlar va oxirgi rasm sozlamalari shu brauzerda qoladi, ikkala manba oynasida ishlaydi. API kaliti saqlanmaydi.
+• Yangi prompt keyingi «Jarayonni boshlash»da qo‘llanadi. Tanlangan model mahsulot matni bilan birga rang, kompozitsiya, matn miqdori va mahsulot surati kattaligini belgilaydi. Tayyor rasm izohida qo‘llangan uslub ko‘rinadi. Qo‘llab bo‘lmaydigan talablar izohlanadi.
+• Rasm prompti mahsulotning o‘zini qayta chizmaydi: asl surat, mavjud xususiyatlar va joriy sotuv variantlari ishlatiladi. Murakkab sahna yaratish, yangi rakurs yoki mahsulot shaklini o‘zgartirish bu kompozitsiya muharririga kirmaydi.
+• Tayyor kartochkada «Rasm sonini qo‘llash» mavjud suratdan kerakli sondagi rasmlarni qayta tayyorlaydi. Mavjud dizaynlar asosida qo‘shimcha kompozitsiyalar tuziladi; yangi API chaqiruvi kerak emas.
+• Har bir PRO rasmda alohida 2160 × 2880 PNG master va 1080 × 1440 JPG bor. HTML eksportiga prompt, dizayn sozlamalari, rasm soni va yoqilgan rasmlar saqlanadi. Ko‘p PNG bilan fayl katta bo‘lsa, brauzer orqali yuklab olish nusxasidan foydalaning.
+• «LOGO 1111.mp4» dagi asl logo eski belgi o‘rniga joylandi. Dastur tepasida bir marta ovozsiz animatsiya ko‘rinadi; harakatni kamaytirish sozlamasida statik logo ko‘rsatiladi. Demo va mustaqil HTMLda statik nusxa bor. Mahsulot infografikalariga dastur logosi qo‘shilmaydi.
+
+YANGI: SOTUV VARIANTLARINI BOSHQARISH
+• «SOTUV VARIANTLARI» bo‘limi ikkala manba oynasida va telefon ekranida ko‘rinadi.
+• «+ Variant qo‘shish»: 3, 5, 10 dona yoki kerakli miqdor uchun yangi variant ochadi.
+• «Tahrirlash»: dona soni, UZ/RU nomi, SKU va qo‘shimcha UZ/RU izohlarni o‘zgartiradi. «Saqlash» tasdiqlaydi, «Bekor qilish» kiritilgan o‘zgarishlarni bekor qiladi.
+• Nom orqali rang, uzunlik yoki boshqa sotuv variantini ajratish mumkin. Masalan: «Qora, 1,5 m» / «Чёрный, 1,5 м». Bular sotuvchi kiritgan ma’lumot sifatida olinadi.
+• SKU bo‘sh qolsa, mahsulot nomi asosida avtomatik taklif qilinadi. Takroriy SKUga ruxsat berilmaydi; lotin harflari, raqam, - va _ ishlatiladi.
+• «O‘chirish» variantni olib tashlaydi; «O‘chirilgan variantni qaytarish» oxirgi o‘chirishni bekor qiladi. Kamida 1 ta, ko‘pi bilan 12 ta variant; har birida 1–9999 dona.
+• Asosiy oynadagi variant sozlamalari shu brauzerda saqlanadi va Uzum / boshqa sayt oynalari o‘rtasida o‘tishda qoladi. API kaliti bunday saqlanmaydi.
+• Tayyor kartochkada ham shu boshqaruv bor. Variant o‘zgarsa, avtomatik qo‘shilgan sotuv bloklari va mavjud surat asosidagi infografikalar yangilanadi. Narx va qoldiq Uzum kabinetida kiritiladi.
+• Kartochkadagi tahrirlar «HTMLni yuklab olish» orqali saqlanadi. Saqlangan HTML internetsiz ochiladi va variantlarni yana tahrirlash mumkin.
+• Eski formatdagi yoki sotuv bloklari qo‘lda o‘zgartirilgan matnda ogohlantirish chiqsa, nom/tavsif/tarkibdagi eski miqdorlarni tekshiring.
+
+YANGI: BOSHQA SAYTDAN → UZUM SHABLONI
+«Boshqa saytdan» — alohida /other oynasi. Ishlab chiqaruvchi, internet-do‘kon va boshqa ochiq mahsulot sahifalarining havolalari uchun. UZ/RU nom, qisqa va to‘liq tavsif, brend/model kabi tasdiqlangan maydonlar, tarkib, yo‘riqnoma, har bir variant uchun alohida SKU va ixtiyoriy xususiyat/SEO/rasmlar bir xil Uzum shablonida tayyorlanadi.
+Dastur sahifadagi Product JSON-LD, mahsulot metama’lumotlari va ko‘rinadigan asosiy matnni o‘qiydi. Skriptlar bajarilmaydi. Bir nechta mahsulot bo‘lsa, aynan havoladagi mahsulot aniqlanmasa, boshqa mahsulot parametrlari aralashtirilmaydi.
+Saytdagi har qanday tilning manba matni asosida UZ va RU natija yoziladi. Avval «Manba» bo‘limidagi o‘qilgan matnni tekshiring. Sotuvchining chegirmasi, reytingi, do‘kon nomi va kafolati yangi kartochkaga avtomatik ko‘chirilmaydi. Manba toifasi ma’lumot uchun ko‘rsatiladi; Uzumning aniq toifasini kabinetdagi ro‘yxatdan o‘zingiz tanlaysiz.
+Tanlangan rang, o‘lcham yoki model haqidagi ma’lumot umumiy mahsulot bilan aralashmasligi uchun kerakli variantni qo‘shimcha promptda aniq yozing. Saytdagi boshqa variantlar komplektga kirmaydi. Manba SKU/ID o‘rniga yangi kartochkaning har bir varianti uchun alohida SKU tavsiya qilinadi.
+Asl suratlar manba sahifasidagi rasm manzillaridan olinadi. Surat yuklanmasa, «Surat tanlash»dan foydalaning. Rasmlar yoqilgan bo‘lsa, mahsulot qismi avvalgidek tanlanadi; do‘kon yozuvi qo‘shilmaydi.
+Har bir sayt avtomatik ochilishi kafolatlanmaydi: login, captcha, bot himoyasi, JavaScript orqali yuklanadigan sahifa, yopiq yoki o‘chirilgan kartochka matn berolmasligi mumkin. Dastur login qilmaydi va himoyani chetlab o‘tmaydi. «Matnni qo‘lda kiritish» tugmasi istalgan payt mavjud; asl nom va tavsifni joylang. Bu usulda sayt o‘qilgan deb ko‘rsatilmaydi. Manbada yetishmagan faktlar taxmin bilan to‘ldirilmaydi.
+Ochiq HTTP/HTTPS manzillar va standart portlar qo‘llanadi. Mahalliy/tarmoq ichidagi manzillar, login-parolli URLlar va yopiq IPga yo‘naltiruvchi havolalar ochilmaydi. API kaliti faqat OpenAIga yuboriladi, mahsulot saytiga yuborilmaydi.
+
+YANGI: XUSUSIYATLAR IXTIYORIY
+«Mahsulot xususiyatlarini yaratish» boshlang‘ich holatda yoqilgan. Yoqilsa, manbaga asoslangan parametrlar UZ/RU jadvalida chiqadi va infografikaga joylanishi mumkin. O‘chirilsa, AI so‘rovida xususiyatlar maydoni bo‘lmaydi; alohida parametrlar jadvali, nusxalanadigan xususiyatlar va infografikadagi parametr kartochkalari chiqarilmaydi. HTML eksportda bu sozlama saqlanadi.
+Tovar nomi, tavsif, brend/model, tarkib, yo‘riqnoma, SEO va tanlangan sotuv variantlari o‘z sozlamalariga ko‘ra qoladi. Tavsif zarur tasdiqlangan faktlarni oddiy jumlalarda tushuntirishi mumkin. Tekshirish uchun manbaning asl matni saqlanadi. Xususiyatlarni qayta yaratish uchun sozlamani yoqib jarayonni yana boshlang; bu yangi matn API so‘rovidir.
+
+MATN SOZLAMALARI VA UCH DARAJA
+• Stiker va emoji: yoqilsa o‘rinli 📦 🔌 kabi bezaklar; o‘chirilsa tayyor matndan emoji tozalanadi.
+• Belgilar: yoqilsa ✓ • kabi ro‘yxat belgilari; o‘chirilsa sarlavha, oddiy gap va kerakli raqamlangan qadamlar ishlatiladi. Texnik birliklar (°, ±, ×, Ω, µ) saqlanadi.
+• Kopirayting: yoqilsa tasdiqlangan xususiyatning xaridorga foydasini tushuntiruvchi mualliflik matni; o‘chirilsa neytral ma’lumotli tavsif. Bu «copyright ©» yozuvi qo‘shish funksiyasi emas.
+Bu uchta tanlov bir-biridan mustaqil. Tanlangan uslub qo‘shimcha promptdagi bezak yoki reklama ko‘rsatmasidan ustun turadi. Mahsulot nomlari va raqamli xususiyatlar bezaksiz qoladi.
+1 — Standart: har bir tildagi to‘liq tavsif uchun 1 200–2 000 belgi maqsadi. Vazifa, foyda, asosiy parametrlar va komplekt.
+2 — Batafsil (boshlang‘ich tanlov): 2 500–4 500 belgi maqsadi. Kengroq izohlar, qo‘llanish, moslik, foydalanish tartibi va 3–4 savol-javob.
+3 — Ekspert: 5 000–8 000 belgi maqsadi. Manbadagi barcha muhim parametrlarning izohi, turli qo‘llanishlar, cheklovlar, to‘plam tanlash va 5–7 savol-javob.
+Bu hajmlar qat’iy kvota emas. Manba yetarli bo‘lmasa, fakt yoki FAQ javobi o‘ylab topilmaydi; tavsif qisqaroq qolishi mumkin va natijada izoh chiqadi. Nom 90, qisqa tavsif 390 belgigacha qoladi. Yuqori darajalar ko‘proq token va vaqt talab qilishi mumkin. Uchta tayyor prompt darajalardan alohida ishlaydi.
+
+4. SEO TEKSHIRUVI
+AI mahsulotga mos 3–4 ta asosiy iborani tanlaydi. Dastur ularni manbaning nomi, tavsifi, xususiyatlari yoki bevosita sahifa meta keywords matniga so‘z chegaralari bo‘yicha solishtiradi. Takrorlangan va tasdiqlanmagan iboralar chiqarilmaydi. Har bir tasdiqlangan ibora yonida manba maydoni va dalil parchasi bor. 3 ta iborani ham tasdiqlash imkoni bo‘lmasa, kamroq son ko‘rsatiladi.
+Kalit so‘zlar nom va tavsifga tabiiy kiritilishi so‘raladi. UZ / RU uchun AI takliflari alohida, yopiladigan bo‘limda beriladi. Ular manba bilan tasdiqlangan iboralar emas. Bu qidiruvlar soni, raqobat yoki Uzum reytingini o‘lchash xizmati emas.
+
+5. FAQAT MAHSULOT SURATI
+«Rasm tayyorlash» o‘chirilsa, faqat matn yaratiladi: surat tahlili uchun API so‘rovi yuborilmaydi va eksportda rasm bo‘lmaydi.
+Yoqilganda tanlangan model Uzumdan olingan ko‘pi bilan 4 ta asl suratni ko‘rib, to‘liq mahsulot joylashgan yozuvsiz to‘rtburchakni tanlaydi. Dastur o‘sha joyni kesib olib, tanlangan rejim bo‘yicha kompozitsiya tuzadi. Mahsulotning o‘zi AI tomonidan qayta chizilmaydi. Bu kontur bo‘yicha fonni o‘chirish emas; mahsulot atrofidagi asl fonning bir qismi qolishi mumkin.
+Rasmlarga do‘kon nomi, muharrir nomi, reklama yozuvi yoki suv belgisi qo‘shilmaydi. Mahsulotning o‘zida ishlab chiqaruvchi bosib chiqargan belgi saqlanadi.
+• PRO infografika (boshlang‘ich tanlov): mahsulotning katta asl surati, ruscha nom, 3 tagacha tasdiqlangan xususiyat va tanlangan sotuv variantlari. 2160 × 2880 PNG master va 1080 × 1440 JPG yuklash nusxasi beriladi. Bu ikki fayl bitta infografikaning ikki formatidir. PNG saqlashda siqish yo‘qotishiga uchramaydi; manbadagi past aniqlik yoki xiralikni tiklamaydi. Eng tiniq natija uchun katta, aniq, yozuvsiz asl surat yuklang. Kichik surat ishlatilsa natijada aniqlik haqida izoh chiqadi. PNG 5 MB dan katta bo‘lsa, ixcham JPG nusxadan foydalaning.
+• PRO o‘chirilganda — ruscha infografika: tanlangan sonda 1080 × 1440 JPG; mahsulot nomi, manbadagi xususiyatlar, tanlangan sotuv variantlari.
+• PRO o‘chirilganda — faqat mahsulot: qo‘shilgan matnsiz tanlangan sonda 1080 × 1440 JPG kompozitsiya. Kompozitsiyalarda asl mahsulot surati turlicha joylanadi; mahsulot sun’iy ko‘paytirilmaydi.
+Surat ustidagi stiker yoki yozuv mahsulotni yopsa, yozuvsiz boshqa asl suratni tanlang. Dastur to‘liq ajratish imkoni bo‘lmagan suratni avtomatik ishlatmaydi. «Surat tanlash» yoki «Manbadan mahsulotni ajratish» orqali to‘rtburchakni sichqoncha/barmoq bilan belgilang; foiz maydonlari bilan ham sozlash mumkin. Suratni kesish mahsulotning hech bir qismini olib tashlamasin.
+Natijadagi «Mahsulotni ajratish» chegarani qayta sozlaydi. «Rasmlarni yangilash» tahrirlangan matn va xususiyatlarni rasmlarga ko‘chiradi. Matn tayyor bo‘lib, surat bosqichi bajarilmasa, kartochka saqlanib qoladi; suratni qo‘lda qo‘shing.
+
+Natijadagi «Rasmlarni yoqish» va «PRO infografika» orqali rejimni o‘zgartirish mumkin. Oldin ajratilgan surat mavjud bo‘lsa, qayta tuzish mahalliy bajariladi va yangi API so‘rovi kerak emas. Rasmlar o‘chirilganda joriy oynada qayta yoqish uchun surat vaqtincha saqlanadi, lekin HTML eksportiga surat va infografikalar kiritilmaydi. «Surat va rasmlarni olib tashlash» manba suratini ham, kesilgan nusxani ham, tayyor rasmlarni ham natijadan o‘chiradi.
+
+6. DEMO VA EKSPORT
+Demo_Namuna.html — shartli qalamdon kartochkasi. Haqiqiy mahsulotga tegishli bo‘lmagan demo matnlar aniq belgilangan. API kaliti va to‘lovsiz ochiladi. Demo uchun asl mahsulot fotosi yo‘q: rasm funksiyasini o‘z suratingiz bilan sinab ko‘rishingiz mumkin.
+Tayyor kartochkani tahrirlang va tegishli maydonlarni «Nusxalash» bilan Uzumga ko‘chiring. Nom 90, qisqa tavsif 390 belgigacha. Tasdiqlanmagan xususiyatlar bo‘sh qoladi.
+«HTMLni yuklab olish» tahrirlar, tanlangan model nomi, batafsillik darajasi, uslub sozlamalari, manba dalillari, tanlangan sotuv variantlari va yoqilgan rasmlarni mustaqil faylga saqlaydi. Faylni internetsiz tahrirlash va qayta saqlash mumkin. API kaliti eksportga kirmaydi. Dastur Uzumga avtomatik joylamaydi.
+
+7. API VA MA’LUMOTLAR
+OpenAI API xarajati tanlangan model va darajaga bog‘liq. Odatda bitta matn so‘rovi va rasmlar yoqilgan hamda asl suratlar mavjud bo‘lsa bitta vision so‘rovi qilinadi. Veb-qidiruv kerak bo‘lsa qo‘shimcha so‘rov va vosita haqi bo‘lishi mumkin. Rasm kompozitsiyalari mahalliy canvas orqali tuziladi; OpenAI Images generatsiyasi chaqirilmaydi.
+API kalitini dasturdagi maxsus maydonga kiriting. Kalit diskka, jurnalga yoki brauzerning doimiy xotirasiga yozilmaydi; faqat api.openai.com autentifikatsiyasi uchun uzatiladi. Manba matni, qo‘shimcha prompt va mahsulotning asl suratlari tanlangan modelga yuboriladi. Jarayon yakunida kalit maydoni tozalanadi. Dastur faqat shu kompyuterning 127.0.0.1 manzilida ishlaydi.
+API kaliti: https://platform.openai.com/api-keys
+Billing: https://platform.openai.com/settings/organization/billing/overview
+Model ma’lumotlari: https://developers.openai.com/api/docs/models
+Veb-qidiruv: https://developers.openai.com/api/docs/guides/tools-web-search
+Model ro‘yxati API: https://developers.openai.com/api/reference/resources/models/methods/list
+Vision: https://developers.openai.com/api/docs/guides/images-vision
+
+Modellar ro‘yxati 2026-11-07 sanasidagi rasmiy API hujjatlariga muvofiq tuzildi. Akkauntingizdagi mavjudlikni dasturdagi tugma bilan tekshiring.
+
+6-versiya yangilanishi: 2026-11-12.

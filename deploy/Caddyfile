@@ -22,3 +22,20 @@
 
 	header -server
 }
+
+# Kartochka Studio. Needs its own DNS A record (kartochka.<domain> → this
+# server). Behind a password: it fetches pages for whoever uses it.
+kartochka.{$APP_DOMAIN} {
+	encode zstd gzip
+	basic_auth {
+		{$KARTOCHKA_USER} {$KARTOCHKA_HASH}
+	}
+	reverse_proxy kartochka:8765 {
+		# The studio answers POSTs that run several minutes (image generation).
+		transport http {
+			read_timeout 6m
+			write_timeout 6m
+		}
+	}
+	header -server
+}

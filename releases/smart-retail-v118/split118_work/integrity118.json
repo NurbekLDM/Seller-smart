@@ -1,0 +1,42 @@
+{
+  "files": {
+    "Smart_Retail_Analitika_v118.html": {
+      "bytes": 6620086,
+      "sha256": "ac720501c9f6eb4f662fa7f42215ba3085483f30521ca7df7b313c765b53a8f9",
+      "javascript_blocks": 37
+    },
+    "Smart_Retail_ERP_v118.html": {
+      "bytes": 19133486,
+      "sha256": "dd696aa1c443ef59ca7d932c99d055e70359f1a5ecff676aed4e504193d1c872",
+      "javascript_blocks": 161
+    }
+  },
+  "preserved": {
+    "Analitika": {
+      "unchanged_named_scripts": 25,
+      "changed_named_scripts": [
+        "transferRuntime113",
+        "srBackup109",
+        "writer101Outer",
+        "sr105ManifestData",
+        "smartRetailErpSessionBridge40",
+        "smartRetailParentServerSync",
+        "smartRetailI18n23"
+      ],
+      "optional_remote_scripts": 0
+    },
+    "ERP": {
+      "unchanged_named_scripts": 122,
+      "changed_named_scripts": [
+        "transferRuntime113",
+        "srBackup109",
+        "writer101",
+        "crm21ServerSync",
+        "portable101",
+        "uzumPro103Integration",
+        "sr108Finish"
+      ],
+      "optional_remote_scripts": 0
+    }
+  }
+}

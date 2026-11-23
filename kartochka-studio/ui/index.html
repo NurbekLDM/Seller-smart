@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SellerSmart · Kartochka Studio</title>
+<link rel="stylesheet" href="/studio.css"><style id="card-styles"><!-- CARD_STYLE --></style>
+</head>
+<body>
+<header class="app-head"><div class="head-inner">
+ <a class="brand" href="#setup" aria-label="SellerSmart Kartochka Studio"><span class="brand-visual"><img class="brand-still" src="/assets/brand-logo.png" alt="SellerSmart"><video class="brand-video" autoplay muted playsinline preload="metadata" poster="/assets/brand-logo.png" aria-hidden="true"><source src="/assets/brand-logo.mp4" type="video/mp4"></video></span><span class="brand-name">SellerSmart<small>Kartochka Studio</small></span></a>
+ <div class="head-right"><span class="local-label"><i></i> Mahalliy ish maydoni</span><a class="sample-link" href="/demo.html" target="_blank" rel="noopener">Demo namuna ↗</a></div>
+</div></header>
+<main class="shell">
+ <nav class="source-nav" aria-label="Kartochka tayyorlash oynalari"><a href="/" id="nav-uzum"><b>Uzum havolasidan</b><span>Uzum kartochkasini moslash</span></a><a href="/other" id="nav-external"><b>Boshqa saytdan</b><span>Mahsulot havolasi → Uzum shabloni</span><i>YANGI</i></a></nav>
+ <section class="page-title"><div class="eyeline">SellerSmart · v6</div><h1 id="page-heading">Havoladan kartochkaga</h1><p id="page-description">Modelni tanlang. Mahsulotga mos matn, tekshirilgan SEO va ruscha infografika.</p></section>
+ <div class="external-intro" id="external-intro" hidden><b>Mahsulotingiz boshqa saytdami?</b><p>Ochiq mahsulot sahifasidan nom, tavsif, parametrlar va asl surat olinadi. Natija Uzum maydonlariga mos UZ/RU matn bo‘ladi. Login, captcha yoki yopiq sahifada matnni qo‘lda kiriting.</p></div>
+ <div class="work-grid">
+  <section class="setup-card" id="setup">
+   <div class="setup-head"><span class="step-num">01</span><div><h2>Manba va ko‘rsatmalar</h2><p>Kalit va havolani kiriting, so‘ng matn uslubini tanlang.</p></div></div>
+   <form id="generator-form" autocomplete="off">
+    <label for="key">OpenAI API kaliti <span class="req">*</span></label>
+    <div class="key-group"><input id="key" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false" maxlength="512" required><button id="reveal-key" type="button" aria-pressed="false" aria-label="API kalitini ko‘rsatish">Ko‘rsatish</button></div>
+    <small>Kalit OpenAI so‘rovi uchun ishlatiladi. <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">API kalitlari ↗</a></small>
+    <fieldset class="model-field"><legend>Kartochkani qaysi model tayyorlasin?</legend>
+     <div class="model-family" role="group" aria-label="Model oilasi">
+      <label><input type="radio" name="model-family" value="6" checked><span>GPT-6 <small>6-avlod</small></span></label>
+      <label><input type="radio" name="model-family" value="5"><span>GPT-5 <small>5-avlod</small></span></label>
+     </div>
+     <label for="model">Aniq model</label><div class="model-select-row"><select id="model" aria-describedby="model-hint model-status"></select><button type="button" id="check-models">Modellarni tekshirish</button></div>
+     <small id="model-hint"></small><small id="model-status" role="status" aria-live="polite">Akkauntingizdagi mavjudlik API kaliti bilan tekshiriladi.</small>
+    </fieldset>
+    <label for="product-url"><span id="url-label">Uzum mahsulot havolasi</span> <span class="req">*</span></label>
+    <input id="product-url" type="url" placeholder="https://uzum.uz/ru/product/…?skuId=…" spellcheck="false" autocomplete="off" required maxlength="3500">
+    <small id="url-help">Mahsulotning aniq havolasini kiriting. Tanlangan variantning skuId qiymatini saqlang.</small>
+    <button type="button" class="manual-shortcut" id="open-manual">Matnni qo‘lda kiritish</button>
+    <fieldset class="preset-field"><legend>Tayyor prompt</legend><div class="preset-options" id="presets"></div>
+     <details class="prompt-detail"><summary>Tanlangan prompt matni</summary><p id="preset-text"></p></details>
+    </fieldset>
+    <fieldset class="detail-field"><legend>Tayyorlash darajasi</legend><div id="detail-levels" class="detail-levels"></div><small id="detail-hint">Hajm har bir tilning to‘liq tavsifi uchun. Yetarli manba bo‘lsa yuqori daraja batafsilroq yozadi.</small></fieldset>
+    <div class="style-options" role="group" aria-label="Matn uslubi sozlamalari">
+     <label class="style-option"><span><b>Stiker va emoji</b><small>📦 🔌 ✨ kabi bezaklar</small></span><input type="checkbox" id="stickers" checked></label>
+     <label class="style-option"><span><b>Belgilar</b><small>✓ • ➜ kabi ro‘yxat belgilari</small></span><input type="checkbox" id="symbols" checked></label>
+     <label class="style-option"><span><b>Kopirayting uslubi</b><small>Foyda va xaridorga mos matn</small></span><input type="checkbox" id="copywriting" checked></label>
+    </div>
+    <label for="extra">Qo‘shimcha o‘zgartirish prompti <span class="optional">ixtiyoriy</span></label>
+    <textarea id="extra" rows="3" maxlength="3000" placeholder="Masalan: texnik atamalarni sodda tushuntiring, asosiy afzalliklarga urg‘u bering."></textarea>
+    <label class="seo-switch properties-switch" for="properties-enabled"><span><b>Mahsulot xususiyatlarini yaratish</b><small>UZ/RU parametrlar jadvali va infografikadagi xususiyatlar. O‘chirilsa, tavsif va tanlangan sotuv variantlari qoladi.</small></span><input type="checkbox" id="properties-enabled" checked></label>
+    <label class="seo-switch" for="seo"><span><b>3–4 ta SEO kalit so‘zini tekshirish</b><small>Mahsulotga mosligi, manbada mavjudligi va takrorlanishi tekshiriladi.</small></span><input type="checkbox" id="seo" checked></label>
+    <div class="image-settings">
+     <label class="seo-switch image-switch" for="images-enabled"><span><b>Rasm tayyorlash</b><small>O‘chirilsa, faqat matn tayyorlanadi; surat uchun API sarflanmaydi.</small></span><input type="checkbox" id="images-enabled" checked></label>
+     <div id="image-options">
+      <label class="seo-switch pro-switch" for="pro-infographic"><span><b>PRO infografika</b><small>Katta mahsulot surati, aniq matn va muhim xususiyatlar.</small></span><input type="checkbox" id="pro-infographic" checked></label>
+      <div id="pro-details" class="pro-details"><span>2160 × 2880 PNG</span><span>1080 × 1440 JPG</span><p>Yuqori aniqlikdagi master va yuklash nusxasi. Har bir dizaynning ikki formati; mahsulotning asl surati ishlatiladi.</p></div>
+      <div class="photo-settings" id="standard-images" hidden><label for="image-mode">Oddiy rasmlar ko‘rinishi</label><select id="image-mode"><option value="infographic">Ruscha infografika · do‘kon yozuvisiz</option><option value="product">Faqat mahsulot · matnsiz kompozitsiyalar</option></select></div>
+      <div id="image-settings-editor"></div>
+      <small>Suratning aniqligi manba sifatiga bog‘liq. Do‘kon nomi va suv belgisi qo‘shilmaydi.</small>
+     </div>
+    </div>
+    <details class="advanced"><summary>API va manbani o‘qish sozlamalari</summary>
+      <label class="option-row"><input type="checkbox" id="use-web" checked><span id="web-source-label">Uzum sahifasidan matn olinmasa, OpenAI veb-qidiruvi bilan shu havolani tekshirish.</span></label>
+      <small>Rasmdagi mahsulotni aniqlash alohida API so‘rovidir. Veb-qidiruv ishlatilsa, uning haqi ham qo‘shiladi.</small>
+    </details>
+    <div class="start-row"><button id="start" type="submit" class="start-button"><span class="run-icon">▷</span> Jarayonni boshlash</button><span class="start-cost">OpenAI API balansingizdan foydalaniladi.</span></div>
+   </form>
+   <section id="manual-box" class="manual-box" hidden><h3>Kartochka matnini kiriting</h3><p id="manual-reason"></p>
+    <label for="manual-title">Manbadagi asl mahsulot nomi</label><input id="manual-title" maxlength="480">
+    <label for="manual-description">Asl tavsif va xususiyatlar</label><textarea id="manual-description" rows="5" maxlength="16000" placeholder="Mahsulot sahifasidagi matnni shu yerga nusxalang."></textarea>
+    <button id="manual-go" class="start-button" type="button">Shu matndan kartochka tayyorlash</button>
+   </section>
+   <div class="alert" id="error-box" role="alert" hidden></div>
+  </section>
+  <aside class="side">
+   <section class="workflow"><div class="side-caption">JARAYON</div><ol id="steps">
+    <li data-step="read"><i>1</i><div><strong>Manbani o‘qish</strong><span>Havola va mahsulot xususiyatlari</span></div></li>
+    <li data-step="generate"><i>2</i><div><strong>Shablonni to‘ldirish</strong><span>UZ/RU tavsiflar va SEO iboralari</span></div></li>
+    <li data-step="media"><i>3</i><div><strong>Rasmlar va HTML</strong><span>Tahrirlash, nusxalash va yuklash</span></div></li></ol>
+    <p class="live" id="progress" role="status" aria-live="polite">Boshlashga tayyor</p><p class="plan-summary" id="plan-summary"></p>
+   </section>
+   <section class="pack-side" id="pack-settings"><div class="side-caption">SOTUV VARIANTLARI</div><h2>To‘plamlarni boshqaring</h2><p>Variant qo‘shing, tahrirlang yoki o‘chiring. Har biri uchun alohida SKU tayyorlanadi.</p><div id="variant-editor"></div><p id="variant-storage-note" class="pv-status" role="status"></p></section>
+   <a class="example-side" href="/demo.html" target="_blank" rel="noopener"><span class="demo-symbol" aria-hidden="true">Aa<span>UZ / RU</span></span><div><span class="side-caption">API KALITISIZ</span><strong>Demo namuna</strong><span>Shablonni ko‘rib chiqish ↗</span></div></a>
+  </aside>
+ </div>
+ <section id="result" hidden><div class="result-heading"><div><div class="eyeline">KARTOCHKA</div><h2>Tayyor natija</h2></div><a class="export-link" id="export-main" href="#" download="Uzum_kartochka.html">HTMLni yuklab olish ↓</a></div><div id="card-editor"></div></section>
+ <footer class="app-foot"><span>SellerSmart</span><span>Kartochka Studio · UZ / RU</span></footer>
+</main>
+<script id="card-brand" type="application/json">/* BRAND_DATA */</script>
+<script id="studio-config" type="application/json">/* STUDIO_CONFIG */</script>
+<script id="card-runtime">/* CARD_RUNTIME */</script><script src="/app.js" defer></script>
+</body></html>
+

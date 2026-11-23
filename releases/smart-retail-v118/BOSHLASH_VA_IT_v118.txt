@@ -1,0 +1,51 @@
+SMART RETAIL v118 — ANALITIKA VA ERP ALOHIDA HTML
+
+1. QAYSI FAYLNI OCHISH KERAK
+
+Smart_Retail_Analitika_v118.html
+Uzum hisobotlari, sotuv va foyda tahlili, funnel, SKU, PRO AI, Excel import/eksport, analitika sozlamalari.
+
+Smart_Retail_ERP_v118.html
+Mahsulotlar, WMS, POS/Mobil POS, mijozlar, qaytarish, xodimlar, chat, moliya, ERPning ichki analitikasi va CEO hisobotlari.
+
+Ikkala fayl alohida ochiladi. Birining ishlashi uchun ikkinchi HTMLni yuklash shart emas. ERPga zarur mahalliy printer/PDF, skaner va qo‘shimcha modul resurslari joylangan. Mavjud qorong‘i/yorug‘ va 5 ta qo‘shimcha rang dizayni saqlangan. ERPning o‘z ichidagi Uzum Pro AI oynasi ham saqlangan; unda Excelni alohida yuklash mumkin.
+
+2. ESKI MA’LUMOTLAR BILAN BOSHLASH
+
+HTML dastur faylining o‘zi brauzerdagi savdo va hisobot ma’lumotlarini ko‘chirmaydi.
+
+1) Amaldagi birlashgan ERP faylida administrator sifatida A13 “Zaxira va ko‘chirish” oynasidan “Qurilma zaxirasi · ZIP” nusxasini oling. Eski ishlayotgan fayl va shu ZIPni saqlang.
+2) Agar avval ERPga analitika orqali avtomatik kirgan bo‘lsangiz, eski ERPdagi administrator login/parolini tekshiring. Ajratilgan fayllarda har birining o‘z kirish oynasi ishlaydi. Parollar avtomatik almashtirilmagan.
+3) Yangi ERP HTMLni oching. Bo‘sh profil ochilsa, “ZIP zaxiradan tiklash”ni tanlang va nusxani tiklang. Baza allaqachon bo‘lsa, administratorning A13 oynasida tarkibni ko‘rib, tiklashni tasdiqlang.
+4) Analitika HTMLni oching. Ma’lumotlar ko‘rinmasa, o‘sha to‘liq ZIPni uning bo‘sh profiliga yoki Sozlamalar → “To‘liq zaxira va ko‘chirish” oynasiga yuklang. Analitika administrator paroli ishlatiladi.
+5) Davr/do‘kon filtrlari, mahsulot qoldiqlari va so‘nggi cheklarni o‘z ma’lumotlaringiz bilan solishtiring.
+
+HTML/JSON hisobot eksporti bilan to‘liq A13 ZIP zaxirasi bir xil emas. ZIP asl import fayllari, chat, analitika va saqlangan navbatni ham qamraydi. Yetishmayotgan asl fayllar bo‘lsa, zaxira oynasi buni ko‘rsatadi.
+
+3. MA’LUMOTLAR QAYERDA SAQLANADI
+
+Bu versiyada dastur oynalari va HTML fayllari ajratildi. Eski saqlash kalitlari va zaxira formati moslik uchun saqlandi; mavjud bazalar avtomatik o‘chirilmadi yoki ikkiga ajratilmadi.
+
+Faylni boshqa nom, manzil yoki brauzerda ochish yangi lokal saqlash joyini ko‘rsatishi mumkin. Ma’lumotlar ko‘rinmasa, avval eski fayldan ZIP zaxirani oling.
+
+Bir xil HTTPS/localhost originida joylashtirilgan ikkala ilova o‘sha manzilning localStorage va IndexedDB ma’lumotlariga ega bo‘ladi. A13 qamrovi shu manzildagi mavjud Smart Retail ma’lumotlarining barchasini ko‘rsatadi. Shu sabab to‘liq ZIP tiklashdan oldin boshqa ilova oynasini yopish talab qilinadi; oddiy ishda ikkala ilova alohida yozish qulflariga ega. Bitta ERPning ikkita nusxasida bir vaqtda savdo yozish himoyasi saqlangan.
+
+4. IT MUTAXASSISI / SUPABASE
+
+Supabasega haqiqiy ulanish bu fayllarga kiritilmagan. Avvalgi SRTransfer113 / protocol 1 adapter shartnomasi, native Storage va A13 server zaxirasi/tiklash interfeyslari saqlangan. Adapter SRTransfer113.boot() boshlanishidan oldin ro‘yxatdan o‘tkaziladi.
+
+Fayllar uchun alohida ma’lumot saqlash ham kerak bo‘lsa, Analitika va ERPni alohida originlarda joylashtiring yoki serverda aniq modul/workspace ajratishini bajaring. Faqat URL yo‘lini /analytics va /erp qilish localStorage/IndexedDBni ajratmaydi. Fayllar o‘rtasida avtomatik server sinxronlash yoki yangi tenant yaratish amalga oshirilmaydi.
+
+Eski umumiy /api/v1/state sinxronlash yo‘li ikkala faylda o‘z-o‘zidan ishga tushmaydi: bir modulning snapshoti boshqasining ma’lumotlarini almashtirishining oldi olindi. Eski backenddan foydalanish rejalashtirilsa, uning origin va snapshot qamrovi tekshirilgandan keyingina window.SRSplitLegacySync118='analytics' yoki 'erp' qiymatini tegishli scriptdan oldin berish mumkin. Yangi Supabase ulanishida avvalgi A13 adapteridan foydalaning; localStorage obyektini almashtirmang va HTMLga service_role kalitini joylamang.
+
+5. TEKSHIRUV
+
+226 ta JavaScript bloki sintaksis tekshiruvidan o‘tdi. 18 ta ajratish sinovi o‘tdi: mustaqil asset yuklash, analitika ruxsatlari, ikkala ilovada ZIP zaxira/tiklash, parallel yozish himoyasi va faol boshqa oynada to‘liq tiklashni to‘xtatish.
+
+POS, qaytarish, bonus, tannarx va rang dizayni asosiy kodlari FIX117 manbasi bilan bir xil ekani solishtirildi. Sinovlar Node VM va taqlid qilingan Storage/IndexedDB/Web Locks muhitida bajarildi. Haqiqiy brauzerda ko‘rinish, printer, skaner va Supabase serveri bilan yakuniy sinov bajarilmadi.
+
+Paketdagi split118_work/test118-results.json va integrity118.json — tekshiruv dalillari. Mahalliy qayta tekshirish:
+python split118_work/validate.py
+node split118_work/test118.cjs
+
+Manbadan qayta qurish uchun avval saqlangan FIX117 birlashgan faylini prepare_source.py ga bering, keyin build.py ni ishga tushiring. Boshqa versiya manbasi bo‘lsa, tekshiruv uni rad etadi.

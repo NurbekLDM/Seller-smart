@@ -52,6 +52,21 @@ services:
       api-gw:
         condition: service_healthy
 
+  # Kartochka Studio (Python, no dependencies) on kartochka.<APP_DOMAIN>.
+  # Users bring their own OpenAI key in the page; the server stores none.
+  kartochka:
+    container_name: smartseller-kartochka
+    image: python:3.12-alpine
+    restart: unless-stopped
+    user: "1000:1000"
+    working_dir: /app
+    command: ["python", "start.py", "--host", "0.0.0.0", "--port", "8765"]
+    volumes:
+      - ${SMARTSELLER_APP_DIR:-/opt/smartseller/app}/kartochka-studio:/app:ro
+    environment:
+      KARTOCHKA_PUBLIC_HOSTS: kartochka.${APP_DOMAIN}
+      PYTHONDONTWRITEBYTECODE: "1"
+
   caddy:
     container_name: smartseller-caddy
     image: caddy:2
@@ -63,6 +78,17 @@ services:
     environment:
       APP_DOMAIN: ${APP_DOMAIN}
       ACME_EMAIL: ${ACME_EMAIL:-}
+      KARTOCHKA_USER: ${KARTOCHKA_USER:-admin}
+      KARTOCHKA_PASSWORD: ${KARTOCHKA_PASSWORD:-}
+    # The Kartochka password is hashed at start, the way Supabase's own
+    # Caddy override does it, so .env holds it in plain text only there.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        KARTOCHKA_HASH=$$(caddy hash-password --plaintext "$${KARTOCHKA_PASSWORD:-$$(head -c 24 /dev/urandom | base64)}") && \
+        export KARTOCHKA_HASH && \
+        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
     volumes:
       - ${SMARTSELLER_APP_DIR:-/opt/smartseller/app}/deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - smartseller_caddy_data:/data

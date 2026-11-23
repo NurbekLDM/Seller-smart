@@ -113,6 +113,9 @@ set_env APP_DOMAIN "$DOMAIN"
 set_env ACME_EMAIL "$EMAIL"
 set_env SMARTSELLER_APP_DIR "$APP_DIR"
 set_env STAFF_EMAIL_DOMAIN "$STAFF_DOMAIN"
+# Kartochka Studio login (kartochka.<domain>): generated once, kept on re-runs.
+grep -q '^KARTOCHKA_USER=' .env || set_env KARTOCHKA_USER admin
+grep -q '^KARTOCHKA_PASSWORD=.' .env || set_env KARTOCHKA_PASSWORD "$(openssl rand -hex 12)"
 chmod 600 .env
 
 ln -sf "$APP_DIR/deploy/docker-compose.smartseller.yml" docker-compose.smartseller.yml

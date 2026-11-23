@@ -1,0 +1,60 @@
+SellerSmart ERP 119.2 — Android
+
+UZ
+YUKLANISH TUZATILDI — 119.2
+ERP bo‘limlari endi baza yozish himoyasi va tiklash tekshiruvi tugagandan keyin ishga tushadi. Kamera uchun 119.1 tuzatishi saqlangan.
+Yuklash 30 soniyadan cho‘zilsa, «Qayta ochish» va «Diagnostika» tugmalari ishlaydi. Diagnostika dastur yuklanishi tugamasa ham ochiladi. Undagi «Nusxalash» orqali xabarni yuborish mumkin.
+Eski ilovani o‘chirmang, «Ma’lumotlarni tozalash»ni bosmang. Ushbu APKni ustidan yangilang.
+
+KAMERA TUZATILDI — 119.1
+Eski APKda kamera ruxsati va WebView kamera so‘rovini qayta ishlash yo‘q edi. Bu nashrda ular qo‘shildi.
+Yangilagandan keyin kassa yoki ombordagi kamera skanerini oching. «Request Camera Permissions» tugmasi chiqsa, bosing. Android so‘raganda «Ilovadan foydalanayotganda ruxsat berish»ni tanlang. Kamera ro‘yxati chiqsa, orqa kamerani tanlab «Start Scanning»ni bosing.
+Oldin ruxsat rad etilgan bo‘lsa: yuqoridagi ⋮ → «Kamera ruxsati» → «Sozlamalar» → «Ruxsatlar» → «Kamera». Keyin ilovaga qaytib skanerni qayta oching.
+Ilova fonga o‘tganda skaner yopiladi. Qaytgach uni qayta oching. Mikrofon ruxsati kerak emas.
+
+1. ZIP arxivini oching va SellerSmart_ERP_v119_2.apk faylini chiqarib oling.
+2. APKni telefonning «Fayllar» ilovasidan oching. Android so‘rasa, shu manbadan o‘rnatishga ruxsat bering.
+3. Oldingi SellerSmart ERP 118.1, 119.0 yoki 119.1 o‘rnatilgan bo‘lsa, ustidan «Yangilash»ni tanlang. Eski ilovani o‘chirmang va ma’lumotlarini tozalamang. Paket va imzolash kaliti bir xil.
+4. Android 8 yoki yangiroq tizim va yangilangan Android System WebView kerak.
+5. Brauzer versiyasidan kelayotgan bo‘lsangiz, ERPning to‘liq zaxirasini eksport qilib, ilovada import qiling; brauzerdagi ma’lumotlar o‘zidan ko‘chmaydi.
+
+Tuzatildi: eksportni bekor qilganda yo‘qolib ketmasligi; qayta saqlash; «Orqaga» tugmasi va oynalar; matn/parol kiritish; ishga tushish holati va tiklash; mobil uslublar; chop etish hujjatidagi joriy qiymatlar.
+
+Excel/JSON/zaxira eksportida Android saqlash oynasi ochiladi. Saqlash bekor qilinsa yoki xato bo‘lsa: ⋮ → «Saqlanmagan eksportlar» → kerakli fayl → saqlash. Tayyor eksport nusxalari ilova qayta ochilganda ham navbatda qoladi. Chegara: 3 ta fayl, har biri 100 MiB gacha. Bu navbat ERPning doimiy zaxirasi o‘rnini bosmaydi.
+Chop etish: ⋮ → «Chop etish» → PDF yoki Android bosma xizmati. To‘g‘ridan-to‘g‘ri Bluetooth/USB printer drayveri yo‘q.
+Ishga tushish to‘xtasa: «Qayta ochish»ni bosing; yana to‘xtasa «Diagnostika» xabarini yuboring. WebView eskirganligi ko‘rsatilsa Android System WebView ni yangilang. ⋮ → «Diagnostika»da versiya va ishga tushish holati ko‘rinadi.
+
+Yig‘ish, APK imzosi, fayllarning butunligi, eksport/navigatsiya testlari va test muhitida ERPning 8 bo‘limi tekshirildi. Haqiqiy telefonda o‘rnatish, kamera orqali shtrix-kod o‘qish, telefon fayl oynasi, printer va barcha biznes jarayonlari tekshirilmagan. Muhim ma’lumot bilan ishlashdan oldin zaxira oling va kichik sinov savdosi/import/eksport orqali tekshiring. Ilovani o‘chirish yoki ma’lumotlarini tozalash mahalliy ma’lumotlarni yo‘qotadi.
+Server sinxronlash va onlayn chat sozlanmagan. Tashqi havolalar brauzerda ochiladi.
+
+RU
+ИСПРАВЛЕНИЕ ЗАПУСКА — 119.2
+Разделы ERP запускаются после завершения проверки права записи и восстановления базы. Исправление камеры из версии 119.1 сохранено.
+Если загрузка длится более 30 секунд, доступны «Повторить» и «Диагностика». Диагностика открывается даже при незавершённой загрузке; её текст можно скопировать.
+Не удаляйте старое приложение и не нажимайте «Очистить данные». Установите этот APK поверх него.
+
+ИСПРАВЛЕНИЕ КАМЕРЫ — 119.1
+В старом APK отсутствовали разрешение камеры и обработчик запроса WebView. В этой версии они добавлены.
+После обновления откройте сканер в кассе или на складе. Если появится «Request Camera Permissions», нажмите эту кнопку. В запросе Android выберите доступ при использовании приложения. Если появится список камер, выберите заднюю и нажмите «Start Scanning».
+Если доступ ранее запрещён: верхнее ⋮ → «Доступ к камере» → «Настройки» → «Разрешения» → «Камера». Затем вернитесь и снова откройте сканер.
+При уходе приложения в фон сканер закрывается; после возвращения откройте его снова. Разрешение микрофона не требуется.
+
+1. Распакуйте ZIP и извлеките SellerSmart_ERP_v119_2.apk.
+2. Откройте APK через приложение «Файлы». Если Android запросит, разрешите установку из этого источника.
+3. Если SellerSmart ERP 118.1, 119.0 или 119.1 уже установлен, выберите «Обновить» поверх него. Не удаляйте старое приложение и не очищайте его данные. Пакет и ключ подписи сохранены.
+4. Нужны Android 8 или новее и обновлённый Android System WebView.
+5. При переходе с браузерной версии экспортируйте полную резервную копию ERP и импортируйте её в приложение; данные браузера автоматически не переносятся.
+
+Исправлены: потеря экспорта при отмене сохранения; повторное сохранение; кнопка «Назад» и окна; ввод текста/пароля; состояние запуска и восстановление; мобильные стили; текущие значения в печатном документе.
+
+При экспорте Excel/JSON/резервной копии появится окно сохранения Android. После отмены или ошибки: ⋮ → «Несохранённые экспорты» → нужный файл → сохранение. Готовые копии остаются в очереди после перезапуска приложения. Лимит: 3 файла по 100 MiB. Очередь не заменяет постоянную резервную копию ERP.
+Печать: ⋮ → «Печать» → PDF или служба печати Android. Прямой Bluetooth/USB драйвер принтера не добавлен.
+Если запуск остановился: нажмите «Повторить»; при повторном сбое отправьте текст диагностики. При сообщении об устаревшем WebView обновите Android System WebView. В ⋮ → «Диагностика» доступны версия и состояние запуска.
+
+Проверены сборка, подпись APK, целостность файлов, экспорт/навигация и 8 разделов ERP в тестовой среде. Установка на реальный телефон, распознавание штрихкодов камерой, системный файловый диалог, принтер и все бизнес-процессы не проверены. Перед использованием важных данных сделайте резервную копию и проверьте небольшую тестовую продажу, импорт и экспорт. Удаление приложения или очистка данных удаляет его локальные данные.
+Серверная синхронизация и онлайн-чат не настроены. Внешние ссылки открываются в браузере.
+
+Package: uz.sellersmart.erp
+Version: 119.2 (11902)
+Min SDK: 26 (Android 8.0)
+Target SDK: 35

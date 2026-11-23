@@ -1,0 +1,79 @@
+{
+  "environment": "Node VM with simulated native Storage, IndexedDB, Web Locks and minimal DOM; no browser/device/server run",
+  "tests": 18,
+  "passed": 18,
+  "results": [
+    {
+      "name": "Both standalone files and all retained PRO/lazy JS modules compile",
+      "status": "pass"
+    },
+    {
+      "name": "Analytics and ERP acquire distinct writer locks on the same origin",
+      "status": "pass"
+    },
+    {
+      "name": "A second ERP is still prevented from writing",
+      "status": "pass"
+    },
+    {
+      "name": "A second analytics document stops before initialization",
+      "status": "pass"
+    },
+    {
+      "name": "ERP can create, verify and restore a ZIP without its former parent",
+      "status": "pass"
+    },
+    {
+      "name": "ERP refuses a full backup while the other app is writing and resumes after close",
+      "status": "pass"
+    },
+    {
+      "name": "ERP refuses full restore before changing data while the other app is active",
+      "status": "pass"
+    },
+    {
+      "name": "Analitika can create, verify and restore a ZIP without its former parent",
+      "status": "pass"
+    },
+    {
+      "name": "Analitika refuses a full backup while the other app is writing and resumes after close",
+      "status": "pass"
+    },
+    {
+      "name": "Analitika refuses full restore before changing data while the other app is active",
+      "status": "pass"
+    },
+    {
+      "name": "Starting another app cannot erase an active restore lock",
+      "status": "pass"
+    },
+    {
+      "name": "Analytics backup checks its own administrator password",
+      "status": "pass"
+    },
+    {
+      "name": "Limited accounts cannot receive backup grants even with ERP admin state",
+      "status": "pass"
+    },
+    {
+      "name": "Logout and credential changes revoke existing analytics backup grants",
+      "status": "pass"
+    },
+    {
+      "name": "Analytics restore grant is action-bound; cancellation does not grant access",
+      "status": "pass"
+    },
+    {
+      "name": "Analytics session bridge stays read-only and PRO AI reads admin reports without an ERP frame",
+      "status": "pass"
+    },
+    {
+      "name": "Standalone ERP resolves all optional assets without a parent application",
+      "status": "pass"
+    },
+    {
+      "name": "Old shared server sync routes stay inactive until explicitly configured per app",
+      "status": "pass"
+    }
+  ]
+}

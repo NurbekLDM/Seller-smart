@@ -7,3 +7,5 @@ _recovered-notes.txt
 src/app.v21.backup.html
 src/app.v23.backup.html
 deploy/migrate/dump-*/
+__pycache__/
+*.pyc
