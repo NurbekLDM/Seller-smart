@@ -42,7 +42,7 @@ PG_IMAGE=${PG_IMAGE:-postgres:17-alpine}
 # the /out path.
 pg() {
     MSYS_NO_PATHCONV=1 docker run --rm -i \
-        -e SOURCE_DB_URL -e PGCONNECT_TIMEOUT=20 -e PGOPTIONS='-c statement_timeout=0' \
+        -e SOURCE_DB_URL -e SCHEMA_ARGS -e PGCONNECT_TIMEOUT=20 -e PGOPTIONS='-c statement_timeout=0' \
         -v "$OUT:/out" "$PG_IMAGE" "$@"
 }
 q() { pg sh -c 'psql "$SOURCE_DB_URL" -X -v ON_ERROR_STOP=1 -Atq "$@"' sh "$@"; }
@@ -51,8 +51,19 @@ echo "===> Connecting"
 version=$(q -c "select current_setting('server_version')")
 echo "     source Postgres $version"
 
-echo "===> schema.sql (public schema)"
-pg sh -c 'pg_dump "$SOURCE_DB_URL" --schema-only --schema=public \
+# public plus every schema someone created by hand (e.g. erp, analytics).
+# Supabase-managed schemas exist on the new instance already.
+MANAGED="'auth','storage','realtime','_realtime','extensions','graphql','graphql_public','vault','pgsodium','pgsodium_masks','net','supabase_functions','supabase_migrations','cron','pgbouncer','_analytics','information_schema','pgmq','pgtle','tiger','topology'"
+SCHEMAS=$(q -c "select string_agg(nspname, ' ' order by nspname) from pg_namespace
+  where nspname = 'public' or (nspname not like 'pg\_%' and nspname not in ($MANAGED))")
+SCHEMA_LIST="'$(echo "$SCHEMAS" | sed "s/ /','/g")'"
+SCHEMA_ARGS=""
+for s in $SCHEMAS; do SCHEMA_ARGS="$SCHEMA_ARGS --schema=$s"; done
+export SCHEMA_ARGS
+echo "     schemas: $SCHEMAS"
+
+echo "===> schema.sql ($SCHEMAS)"
+pg sh -c 'pg_dump "$SOURCE_DB_URL" --schema-only $SCHEMA_ARGS \
     --no-publications --no-subscriptions --quote-all-identifiers \
     --file=/out/schema.sql'
 
@@ -60,8 +71,8 @@ echo "===> auth-users.csv, auth-identities.csv"
 q -c "\\copy (select * from auth.users order by created_at, id) to '/out/auth-users.csv' with (format csv, header true)"
 q -c "\\copy (select * from auth.identities order by created_at, id) to '/out/auth-identities.csv' with (format csv, header true)"
 
-echo "===> data-public.sql (all public rows)"
-pg sh -c 'pg_dump "$SOURCE_DB_URL" --data-only --schema=public \
+echo "===> data-public.sql (all rows of $SCHEMAS)"
+pg sh -c 'pg_dump "$SOURCE_DB_URL" --data-only $SCHEMA_ARGS \
     --no-publications --no-subscriptions --quote-all-identifiers \
     --file=/out/data-public.sql'
 
@@ -71,7 +82,7 @@ echo "===> fixups.sql"
     echo "-- Triggers that public functions hang on auth tables (not part of a"
     echo "-- public-schema dump), and the tables Realtime publishes."
     echo
-    q -c "
+    q -c "set search_path = ''" -c "
       select format('drop trigger if exists %I on %I.%I;', t.tgname, n.nspname, c.relname)
              || chr(10) || pg_get_triggerdef(t.oid) || ';'
       from pg_trigger t
@@ -79,7 +90,7 @@ echo "===> fixups.sql"
       join pg_namespace n on n.oid = c.relnamespace
       join pg_proc p on p.oid = t.tgfoid
       join pg_namespace pn on pn.oid = p.pronamespace
-      where n.nspname = 'auth' and not t.tgisinternal and pn.nspname = 'public'
+      where n.nspname = 'auth' and not t.tgisinternal and pn.nspname in ($SCHEMA_LIST)
       order by c.relname, t.tgname"
     echo
     q -c "
@@ -91,7 +102,7 @@ echo "===> fixups.sql"
   end if;
 end \$x\$;\$f\$, schemaname, tablename, schemaname, tablename)
       from pg_publication_tables
-      where pubname = 'supabase_realtime' and schemaname = 'public'
+      where pubname = 'supabase_realtime' and schemaname in ($SCHEMA_LIST)
       order by tablename"
 } > "$OUT/fixups.sql"
 
@@ -101,7 +112,7 @@ q -F "$(printf '\t')" -c "
          (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', n.nspname, c.relname), false, true, '')))[1]::text
   from pg_class c join pg_namespace n on n.oid = c.relnamespace
   where c.relkind in ('r', 'p')
-    and (n.nspname = 'public' or (n.nspname = 'auth' and c.relname in ('users', 'identities')))
+    and (n.nspname in ($SCHEMA_LIST) or (n.nspname = 'auth' and c.relname in ('users', 'identities')))
   order by 1" > "$OUT/counts.tsv"
 
 echo "===> info.txt"
@@ -117,7 +128,7 @@ echo "===> info.txt"
       select n.nspname || '.' || c.relname, c.reltuples::bigint
       from pg_class c join pg_namespace n on n.oid = c.relnamespace
       where c.relkind = 'r' and c.reltuples > 0
-        and n.nspname not in ('public', 'auth', 'pg_catalog', 'information_schema', 'extensions',
+        and n.nspname not in ($SCHEMA_LIST) and n.nspname not in ('auth', 'pg_catalog', 'information_schema', 'extensions',
                               'realtime', '_realtime', 'storage', 'supabase_functions', 'supabase_migrations',
                               'net', 'pgsodium', 'vault', 'graphql', 'graphql_public', 'cron', 'pgbouncer', '_analytics')
       order by 1"

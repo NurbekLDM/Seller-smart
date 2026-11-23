@@ -89,6 +89,8 @@ echo "===> Loading (one transaction)"
     echo "drop schema migrate_staging cascade;"
     cat "$DUMP/data-public.sql"
     echo "set session_replication_role = origin;"
+    # Older dumps named trigger functions without a schema.
+    echo "set search_path = public, extensions;"
     cat "$DUMP/fixups.sql"
     echo "commit;"
 } > /tmp/sr-restore.sql
