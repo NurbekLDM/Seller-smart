@@ -82,8 +82,9 @@ echo "===> Loading (one transaction)"
     echo "create schema migrate_staging;"
     staging_ddl "$DUMP/auth-users.csv" users
     staging_ddl "$DUMP/auth-identities.csv" identities
-    echo "\\copy migrate_staging.users from '/tmp/sr-auth-users.csv' with (format csv, header true)"
-    echo "\\copy migrate_staging.identities from '/tmp/sr-auth-identities.csv' with (format csv, header true)"
+    # printf, not echo: dash's echo reads "\c" as "stop output" and drops the line.
+    printf '%s\n' "\\copy migrate_staging.users from '/tmp/sr-auth-users.csv' with (format csv, header true)"
+    printf '%s\n' "\\copy migrate_staging.identities from '/tmp/sr-auth-identities.csv' with (format csv, header true)"
     load_by_name users
     load_by_name identities
     echo "drop schema migrate_staging cascade;"
