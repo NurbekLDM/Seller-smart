@@ -92,7 +92,10 @@ Birinchi marta yoqish (bir marta):
 cd /opt/smartseller/app && git pull
 docker exec -i supabase-db psql -X -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
   < supabase/2026-11-27-erp119-kv.sql
-sh /opt/smartseller/supabase/run.sh restart app caddy
+# "start" (docker compose up -d): app konteyneri yangi ERP119_HOST bilan qayta yaratiladi.
+# "restart" bu yerda yetmaydi — u konteynerni eski sozlamasi bilan qayta yoqadi.
+sh /opt/smartseller/supabase/run.sh start
+sh /opt/smartseller/supabase/run.sh restart caddy
 ```
 
 Qanday ishlaydi (batafsil: `erp119/sync.js`, `server/erp119.mjs`):
