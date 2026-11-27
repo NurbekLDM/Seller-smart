@@ -48,7 +48,7 @@ staging_ddl() {
 load_by_name() { cat <<SQL
 do \$\$
 declare
-  cols text; sel text; lost text;
+  cols text; sel text; lost text; hit int;
 begin
   select string_agg(format('%I', a.attname), ', ' order by a.attnum),
          string_agg(format('s.%I::%s', a.attname, format_type(a.atttypid, a.atttypmod)), ', ' order by a.attnum)
@@ -63,8 +63,8 @@ begin
       and not exists (select 1 from pg_attribute a where a.attrelid = 'auth.$1'::regclass
                       and a.attname = c.column_name and not a.attisdropped)
   loop
-    execute format('select 1 from migrate_staging.%I where %I is not null limit 1', '$1', lost);
-    if found then raise exception 'auth.$1.% holds data but does not exist on this server', lost; end if;
+    execute format('select 1 from migrate_staging.%I where %I is not null limit 1', '$1', lost) into hit;
+    if hit is not null then raise exception 'auth.$1.% holds data but does not exist on this server', lost; end if;
     raise notice 'auth.$1.% skipped (absent here, empty in the source)', lost;
   end loop;
   execute format('insert into auth.$1 (%s) select %s from migrate_staging.$1 s', cols, sel);
