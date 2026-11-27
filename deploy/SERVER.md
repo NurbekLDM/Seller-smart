@@ -78,3 +78,37 @@ sh /opt/smartseller/supabase/run.sh restart app
 
 Studio (baza paneli): `ssh -L 8000:127.0.0.1:8000 root@SERVER_IP`, so'ng `http://localhost:8000`
 (login/parol: `sh /opt/smartseller/supabase/run.sh secrets`).
+
+## ERP 119.3 (erp.<domen>) — server bilan sinxron
+
+ERP 119.3 endi o'z ma'lumotini serverda saqlaydi: kirish SellerSmart hisobi bilan
+(email yoki xodim logini), har bir o'zgarish serverga yuboriladi, boshqa qurilmada
+ochilganda ko'rinadi. Eski ERP (`sellersmart.uz/erp`) ga tegilmaydi: 119.3 alohida
+jadvalda (`erp119_kv`), birinchi ochilishda eski ERP ma'lumoti unga bir marta nusxalanadi.
+
+Birinchi marta yoqish (bir marta):
+
+```sh
+cd /opt/smartseller/app && git pull
+docker exec -i supabase-db psql -X -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+  < supabase/2026-11-27-erp119-kv.sql
+sh /opt/smartseller/supabase/run.sh restart app caddy
+```
+
+Qanday ishlaydi (batafsil: `erp119/sync.js`, `server/erp119.mjs`):
+
+- Sahifa ochilishi: hisob tekshiriladi → serverdan ma'lumot yuklanadi → ERP ochiladi.
+  Internet bo'lmasa, qurilmadagi oxirgi nusxa bilan ochiladi.
+- Yozish: o'zgargan kalit ~1 soniyada serverga ketadi. Internet yo'q bo'lsa navbatda
+  turadi (sahifa yopilsa ham), internet qaytganda o'zi yuboriladi.
+- Ikki qurilma bir ro'yxatni o'zgartirsa (masalan, ikkalasi mahsulot qo'shsa), yozuvlar
+  `id` bo'yicha birlashtiriladi. Bir yozuvni ikkalasi o'zgartirsa, oxirgi yuborgan
+  qurilmaniki qoladi; eski qiymat `erp119_kv_history` da saqlanadi (har kalitga 10 ta).
+- Pastki chap burchakdagi belgi holatni ko'rsatadi: "Serverda saqlangan",
+  "Yuborilmoqda", "Internet yo'q — navbatda: N", yoki "Boshqa qurilmada o'zgarish bor —
+  yangilash". Uni bossangiz: hozir yuborish, serverdan qayta yuklash, chiqish.
+- Sinxronlanmaydi: chat bazasi (o'z serveri bor) va asl import fayllari (faqat import
+  qilingan qurilmada).
+- Asl 119.3 fayli (`releases/sellersmart-erp-119.3/`) o'zgartirilmaydi; server uni
+  ochishda adapterni ulaydi. Yangi versiya kelsa, faylni almashtirib `npm run check`
+  ni ishga tushiring: ulash nuqtalari topilmasa, test xato beradi.

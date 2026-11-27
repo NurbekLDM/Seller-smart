@@ -23,19 +23,24 @@
 	header -server
 }
 
-# SellerSmart ERP 119.3 — the vendor's standalone (offline, browser-storage)
-# ERP. On its own origin on purpose: on sellersmart.uz it would share
-# localStorage/IndexedDB keys with the live Supabase-synced app. Same login
-# as Kartochka Studio. Needs a DNS A record (erp.<domain> → this server).
+# SellerSmart ERP 119.3 with server storage (server/erp119.mjs,
+# erp119/sync.js, supabase/2026-11-27-erp119-kv.sql). On its own origin on
+# purpose: on sellersmart.uz it would share localStorage/IndexedDB keys with
+# the live ERP. Users sign in with their SellerSmart account; the Supabase
+# API is proxied here too, so the page talks to it same-origin.
+# Needs a DNS A record (erp.<domain> → this server).
 erp.{$APP_DOMAIN} {
 	encode zstd gzip
-	basic_auth {
-		{$KARTOCHKA_USER} {$KARTOCHKA_HASH}
+
+	@supabase path /auth/v1/* /rest/v1/* /realtime/v1/*
+	handle @supabase {
+		reverse_proxy api-gw:8000
 	}
-	root * /srv/releases/sellersmart-erp-119.3
-	rewrite / /SellerSmart_ERP_119_3.html
-	file_server
-	header Cache-Control "no-cache"
+
+	handle {
+		reverse_proxy app:3000
+	}
+
 	header -server
 }
 

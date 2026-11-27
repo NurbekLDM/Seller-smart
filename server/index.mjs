@@ -23,7 +23,10 @@
      PUBLIC_SUPABASE_URL        Supabase URL as the BROWSER reaches it, e.g.
                                 https://sellersmart.uz (same origin as the app)
      SUPABASE_PUBLIC_KEY        key the browser uses (default SUPABASE_ANON_KEY)
-     STAFF_EMAIL_DOMAIN         optional, default staff.sellersmart.uz */
+     STAFF_EMAIL_DOMAIN         optional, default staff.sellersmart.uz
+     ERP119_HOST                optional, e.g. erp.sellersmart.uz: serve
+                                ERP 119.3 with server storage on that host
+                                (server/erp119.mjs) */
 
 import { createServer } from 'node:http';
 import { createReadStream, readFileSync } from 'node:fs';
@@ -56,6 +59,7 @@ const API_ROUTES = new Map([
   ['/api/admin/users', (await import(pathToFileURL(join(ROOT, 'api/admin/users.js')).href)).default]
 ]);
 const GATED_PATHS = new Set(middlewareConfig.matcher);
+const { createErp119 } = await import(pathToFileURL(join(ROOT, 'server/erp119.mjs')).href);
 
 /* ----------------------------------------------------------- vercel.json */
 
@@ -261,6 +265,22 @@ async function serveApi(req, res, handler, url, baseHeaders) {
   await handler(req, api);
 }
 
+/* ---------------------------------------------------------------- erp119 */
+
+// ERP 119.3 on its own host (see server/erp119.mjs); null when ERP119_HOST
+// is not set.
+const erp119 = createErp119({
+  root: ROOT,
+  publicDir: PUBLIC_DIR,
+  env: process.env,
+  async gate(req, res, url, headers) {
+    const response = await runMiddleware(req, url);
+    if (!response) return false;
+    await sendWebResponse(res, response, headers);
+    return true;
+  }
+});
+
 /* ---------------------------------------------------------------- server */
 
 const server = createServer(async (req, res) => {
@@ -285,6 +305,8 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
       return res.end('ok');
     }
+
+    if (erp119 && erp119.matches(url)) return await erp119.handle(req, res, url, pathname);
 
     const baseHeaders = headersFor(pathname, secure);
 
@@ -327,7 +349,8 @@ server.listen(PORT, () => {
     port: PORT,
     supabaseUrl: env('SUPABASE_URL') || null,
     publicSupabaseUrl: PUBLIC_SUPABASE_URL || null,
-    serviceKey: Boolean(env('SUPABASE_SERVICE_ROLE_KEY'))
+    serviceKey: Boolean(env('SUPABASE_SERVICE_ROLE_KEY')),
+    erp119Host: erp119 ? erp119.host : null
   }));
 });
 

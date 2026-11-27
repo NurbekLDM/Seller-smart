@@ -9,7 +9,7 @@ Uzum sotuvchilari uchun SellerSmart mahsulotlari — bitta repoda.
 | `deploy/` | Server o'rnatish (self-hosted Supabase + Caddy), ma'lumot ko'chirish skriptlari. Yo'riqnoma: [deploy/SERVER.md](deploy/SERVER.md) | Ishlatilgan |
 | `kartochka-studio/` | **Kartochka Studio v6** — Uzum/boshqa sayt havolasidan UZ/RU kartochka (Python, OpenAI). Serverda `kartochka.<domen>` da, parol bilan | Yangi |
 | `releases/smart-retail-v118/` | Ishlab chiquvchidan kelgan **v118**: Analitika va ERP alohida HTML fayllar + tekshiruv skriptlari | Hali saytga ulanmagan |
-| `releases/sellersmart-erp-119.3/` | **SellerSmart ERP 119.3** — alohida (offline) ERP HTML. Serverda `erp.<domen>` da, Kartochka bilan bir xil parol | Yangi |
+| `releases/sellersmart-erp-119.3/`, `erp119/` | **SellerSmart ERP 119.3**: ishlab chiquvchining HTML fayli (o'zgartirilmaydi) va uni serverga ulovchi adapter. Serverda `erp.<domen>` da, SellerSmart hisobi bilan kirish, ma'lumot serverda (`erp119_kv`). Yo'riqnoma: [deploy/SERVER.md](deploy/SERVER.md) | Server bilan sinxron |
 | `releases/android/` | **SellerSmart ERP 119.2** Android APK | Tayyor fayl |
 | `releases/diet-seller/` | **DIET SELLER 2.0** — alohida ilova (ovqatlanish kundaligi), HTML va APK | Tayyor fayl |
 

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SellerSmart ERP — kirish</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111827; color: #f1f5f9; font: 16px/1.5 system-ui, sans-serif; padding: 16px; }
+  form { width: 100%; max-width: 380px; background: #1c2638; border-radius: 16px; padding: 28px; box-shadow: 0 10px 40px #0006; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 20px; color: #94a3b8; font-size: 14px; }
+  label { display: block; font-size: 14px; margin: 14px 0 6px; color: #cbd5e1; }
+  input { width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid #334155; background: #0f172a; color: #f1f5f9; font: inherit; }
+  input:focus { outline: 2px solid #7057e8; border-color: transparent; }
+  button { width: 100%; margin-top: 22px; padding: 12px; border: 0; border-radius: 10px; background: #7057e8; color: #fff; font: 600 16px system-ui; cursor: pointer; }
+  button[disabled] { opacity: .6; cursor: wait; }
+  #error { min-height: 22px; margin-top: 14px; color: #fca5a5; font-size: 14px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<form id="form" autocomplete="on">
+  <h1>SellerSmart ERP</h1>
+  <p class="sub">Hisobingiz bilan kiring · Войдите в аккаунт</p>
+  <label for="login">Email yoki login · Email или логин</label>
+  <input id="login" name="username" autocomplete="username" required autofocus>
+  <label for="password">Parol · Пароль</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required>
+  <button id="submit" type="submit">Kirish · Войти</button>
+  <div id="error" role="alert"></div>
+</form>
+<script src="/assets/app-config.js"></script>
+<script src="/assets/vendor/supabase.js"></script>
+<script>
+(function () {
+  'use strict';
+  var config = window.SMART_RETAIL_CONFIG || {};
+  var errorBox = document.getElementById('error');
+  var button = document.getElementById('submit');
+  if (!window.supabase || !config.supabaseUrl || !config.supabaseAnonKey) {
+    errorBox.textContent = 'Server sozlamasi topilmadi. / Нет настроек сервера.';
+    button.disabled = true;
+    return;
+  }
+  var client = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, {
+    auth: { storageKey: 'sr119-auth', persistSession: true, autoRefreshToken: true }
+  });
+
+  function setCookie(session) {
+    var parts = ['sr-access-token=' + encodeURIComponent(session.access_token), 'Path=/', 'SameSite=Lax',
+      'Max-Age=' + Math.max(60, session.expires_in || 3600)];
+    if (location.protocol === 'https:') parts.push('Secure');
+    document.cookie = parts.join('; ');
+  }
+
+  var reason = new URLSearchParams(location.search).get('session');
+  if (reason === 'rejected') {
+    // The server refused this browser's token: drop it here too, or the
+    // two sides bounce the user between each other.
+    client.auth.signOut({ scope: 'local' }).catch(function () {});
+    errorBox.textContent = 'Sessiya tugagan. Qayta kiring. / Сессия истекла, войдите снова.';
+  } else {
+    client.auth.getSession().then(function (r) {
+      var s = r.data && r.data.session;
+      if (s) { setCookie(s); location.replace('/'); }
+    });
+  }
+
+  document.getElementById('form').addEventListener('submit', function (event) {
+    event.preventDefault();
+    var login = document.getElementById('login').value.trim();
+    var password = document.getElementById('password').value;
+    var email = login.indexOf('@') === -1
+      ? login.toLowerCase() + '@' + (config.staffEmailDomain || 'staff.sellersmart.uz')
+      : login;
+    errorBox.textContent = '';
+    button.disabled = true;
+    client.auth.signInWithPassword({ email: email, password: password }).then(function (r) {
+      if (r.error || !r.data.session) {
+        button.disabled = false;
+        errorBox.textContent = /invalid/i.test(r.error && r.error.message || '')
+          ? 'Login yoki parol noto‘g‘ri. / Неверный логин или пароль.'
+          : 'Kirib bo‘lmadi: ' + (r.error && r.error.message || 'noma’lum xato');
+        return;
+      }
+      setCookie(r.data.session);
+      location.replace('/');
+    }, function (e) {
+      button.disabled = false;
+      errorBox.textContent = 'Server bilan aloqa yo‘q. / Нет связи с сервером.\n' + (e && e.message || '');
+    });
+  });
+})();
+</script>
+</body>
+</html>
