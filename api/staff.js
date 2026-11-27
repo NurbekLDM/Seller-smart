@@ -10,6 +10,8 @@
      SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY (required)
      STAFF_EMAIL_DOMAIN (optional, default staff.sellersmart.uz) */
 
+import { recordAudit } from './_audit.js';
+
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -271,12 +273,26 @@ export default async function handler(req, res) {
     }
     if (req.method === 'POST') {
       const body = (req.body && typeof req.body === 'object') ? req.body : {};
-      switch (body.action) {
-        case 'create': return res.status(201).json(await createStaff(caller.id, body));
-        case 'update': return res.status(200).json(await updateStaff(caller.id, body));
-        case 'delete': return res.status(200).json(await deleteStaff(caller.id, body));
-        default: return res.status(400).json({ error: 'Noma’lum amal.' });
-      }
+      const actions = {
+        create: () => createStaff(caller.id, body),
+        update: () => updateStaff(caller.id, body),
+        delete: () => deleteStaff(caller.id, body)
+      };
+      const run = actions[body.action];
+      if (!run) return res.status(400).json({ error: 'Noma’lum amal.' });
+      const result = await run();
+      await recordAudit({
+        actor_id: caller.id,
+        actor_email: caller.email,
+        action: 'staff.' + body.action,
+        target_id: body.action === 'create' ? result.id : (body.id || null),
+        service: 'erp',
+        details: {
+          login: body.login, name: body.name, active: body.active, modules: body.modules,
+          password_changed: Boolean(body.password)
+        }
+      }, req);
+      return res.status(body.action === 'create' ? 201 : 200).json(result);
     }
     return res.status(405).json({ error: 'HTTP metod qo‘llanmaydi.' });
   } catch (error) {

@@ -5,7 +5,7 @@
    Vercel project settings. */
 
 export const config = {
-  matcher: ['/', '/index.html', '/admin', '/admin.html', '/erp', '/erp.html']
+  matcher: ['/', '/index.html', '/admin', '/admin.html', '/erp', '/erp.html', '/app', '/app.html']
 };
 
 export default async function middleware(request) {
@@ -62,6 +62,10 @@ export default async function middleware(request) {
 function bounce(request, reason) {
   const target = new URL('/login.html', request.url);
   target.searchParams.set('session', reason);
+  // "Mening servislarim" comes back to itself after login (a service it
+  // was opening is in its query).
+  const from = new URL(request.url);
+  if (from.pathname === '/app' || from.pathname === '/app.html') target.searchParams.set('next', '/app.html' + from.search);
   const cookie = [
     'sr-access-token=',
     'Path=/',

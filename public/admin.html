@@ -43,6 +43,17 @@
     button.pill{height:26px;padding:0 10px;font-size:11px;font-weight:700;border-radius:20px;background:rgba(255,255,255,.07);color:#6f7f9b;border:1px solid rgba(255,255,255,.1)}
     button.pill.on{background:rgba(48,209,88,.15);color:#5fd98c;border-color:rgba(48,209,88,.35)}
     .pills{display:flex;gap:6px}
+    button.svc{height:26px;padding:0 9px;font-size:11px;font-weight:700;border-radius:20px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.07);color:#6f7f9b}
+    button.svc.on{background:rgba(48,209,88,.15);color:#5fd98c;border-color:rgba(48,209,88,.35)}
+    button.svc.bad{background:rgba(255,90,90,.13);color:#ff9a9a;border-color:rgba(255,90,90,.35)}
+    button.svc.wait{background:rgba(255,176,32,.12);color:#f3c778;border-color:rgba(255,176,32,.35)}
+    dialog{border:1px solid rgba(255,255,255,.12);border-radius:16px;background:#0d1628;color:#e8eef9;padding:20px;width:min(420px,calc(100vw - 32px))}
+    dialog::backdrop{background:rgba(3,7,18,.7)}
+    dialog label{display:block;margin:12px 0 6px;font-size:12px;color:#c3cfe0;font-weight:700}
+    dialog input,dialog select{width:100%;min-width:0}
+    dialog select{height:42px;padding:0 12px;border:1px solid rgba(255,255,255,.14);border-radius:10px;background:#101b30;color:#fff;font-size:13px}
+    .audit td{white-space:normal;vertical-align:top}
+    .audit code{font-size:11px;color:#9fb0cc;word-break:break-word}
   </style>
   <script src="assets/app-config.js"></script>
   <script src="assets/vendor/supabase.js"></script>
@@ -101,13 +112,46 @@
       <p class="muted" style="margin:-6px 0 12px;font-size:12px">Bu ro‘yxatda faqat workspace egalari. Har bir egasining ERP xodimlari “Xodimlar” ustunidagi sonni bosganda ochiladi — xodimlarni odatda egasining o‘zi ERP ichidan boshqaradi. “Mahsulotlar” ustunidagi tugmalar hisobga ulangan mahsulotni yoqadi yoki o‘chiradi (Analitika, ERP yoki ikkalasi).</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Email</th><th>Ism</th><th>Holat</th><th>Mahsulotlar</th><th>Xodimlar</th><th>Muddat</th><th>Oxirgi kirish</th><th>Amallar</th></tr></thead>
-          <tbody id="rows"><tr><td colspan="8" class="muted">Yuklanmoqda...</td></tr></tbody>
+          <thead><tr><th>Email</th><th>Ism</th><th>Holat</th><th>Mahsulotlar</th><th>Servislar</th><th>Xodimlar</th><th>Muddat</th><th>Oxirgi kirish</th><th>Amallar</th></tr></thead>
+          <tbody id="rows"><tr><td colspan="9" class="muted">Yuklanmoqda...</td></tr></tbody>
         </table>
       </div>
       <div class="error" id="listError"></div>
     </div>
+
+    <div class="card">
+      <h2>Audit jurnali <span class="muted" id="auditLabel"></span></h2>
+      <p class="muted" style="margin:-6px 0 12px;font-size:12px">Kim, qachon, nimani o‘zgartirdi: hisoblar, servis muddatlari, xodimlar, ERP zaxiradan tiklash, servisga kirish. Parollar yozilmaydi.</p>
+      <div class="row" style="margin-bottom:10px">
+        <select id="auditUser" style="height:42px;padding:0 12px;border:1px solid rgba(255,255,255,.14);border-radius:10px;background:#101b30;color:#fff;font-size:13px;flex:1;min-width:200px"><option value="">Barcha foydalanuvchilar</option></select>
+        <button class="ghost" id="auditReload" type="button">Yangilash</button>
+      </div>
+      <div class="table-wrap"><table class="audit"><thead><tr><th>Vaqt</th><th>Kim</th><th>Amal</th><th>Kimga</th><th>Tafsilot</th></tr></thead><tbody id="auditRows"><tr><td colspan="5" class="muted">Yuklanmoqda...</td></tr></tbody></table></div>
+      <div class="error" id="auditError"></div>
+    </div>
   </div>
+
+  <dialog id="grantDialog">
+    <form method="dialog" id="grantForm">
+      <h2 style="margin:0 0 4px;font-size:16px" id="grantTitle">Servis</h2>
+      <div class="muted" id="grantWho"></div>
+      <label for="grantState">Holat</label>
+      <select id="grantState"><option value="open">Ochiq</option><option value="blocked">Bloklangan</option></select>
+      <label for="grantStart">Boshlanish sanasi (ixtiyoriy)</label>
+      <input id="grantStart" type="date">
+      <label for="grantEnd">Tugash sanasi (bo‘sh — muddatsiz)</label>
+      <input id="grantEnd" type="date">
+      <label for="grantNote">Izoh (ixtiyoriy)</label>
+      <input id="grantNote" type="text" maxlength="300">
+      <div class="muted" id="grantDefault" style="margin-top:10px"></div>
+      <div class="row" style="margin-top:16px">
+        <button type="button" id="grantSave">Saqlash</button>
+        <button type="button" class="ghost" id="grantReset">Standart qoida</button>
+        <button type="button" class="ghost" id="grantCancel">Bekor</button>
+      </div>
+      <div class="error" id="grantError"></div>
+    </form>
+  </dialog>
 
   <div class="wrap denied card" id="denied" style="display:none">
     <h1>Ruxsat yo‘q</h1>
@@ -171,6 +215,104 @@
         }
         return payload;
       }
+
+      /* The four services and their per-account grant (service_grants,
+         supabase/2026-11-28-erp119-team.sql). */
+      var SERVICE_LABELS = [
+        { id: 'erp', label: 'ERP' },
+        { id: 'analytics', label: 'Analitika' },
+        { id: 'diet', label: 'Diet' },
+        { id: 'kartochka', label: 'Kartochka' }
+      ];
+
+      function serviceState(user, service) {
+        var g = (user.grants || {})[service];
+        var now = Date.now();
+        if (!g) {
+          if (service === 'erp' || service === 'analytics') {
+            var on = (user.products || []).indexOf(service) !== -1;
+            return { cls: on ? 'on' : '', text: on ? 'mahsulot bo‘yicha' : 'yo‘q' };
+          }
+          return { cls: '', text: 'yo‘q' };
+        }
+        if (g.blocked) return { cls: 'bad', text: 'bloklangan' };
+        if (g.starts_at && new Date(g.starts_at).getTime() > now) return { cls: 'wait', text: new Date(g.starts_at).toLocaleDateString() + ' dan' };
+        if (g.expires_at && new Date(g.expires_at).getTime() <= now) return { cls: 'bad', text: 'tugagan' };
+        return { cls: 'on', text: g.expires_at ? new Date(g.expires_at).toLocaleDateString() + ' gacha' : 'muddatsiz' };
+      }
+
+      function dateInput(iso) { return iso ? localDateString(iso) : ''; }
+      function endOfDay(value) { return value ? new Date(value + 'T23:59:59').toISOString() : null; }
+      function startOfDay(value) { return value ? new Date(value + 'T00:00:00').toISOString() : null; }
+
+      function openGrant(user, service) {
+        var label = SERVICE_LABELS.filter(function (x) { return x.id === service.id; })[0].label;
+        var g = (user.grants || {})[service.id] || {};
+        el('grantTitle').textContent = label + ' — ruxsat';
+        el('grantWho').textContent = user.email;
+        el('grantState').value = g.blocked ? 'blocked' : 'open';
+        el('grantStart').value = dateInput(g.starts_at);
+        el('grantEnd').value = dateInput(g.expires_at);
+        el('grantNote').value = g.note || '';
+        el('grantError').textContent = '';
+        el('grantDefault').textContent = (service.id === 'erp' || service.id === 'analytics')
+          ? 'Standart qoida: “Mahsulotlar” ustunidagi tugma bo‘yicha.'
+          : 'Standart qoida: servis yopiq.';
+        var dialog = el('grantDialog');
+        function send(body, button) {
+          button.disabled = true;
+          api('POST', body).then(function () { dialog.close(); return load(); })
+            .catch(function (error) { el('grantError').textContent = error.message; })
+            .finally(function () { button.disabled = false; });
+        }
+        el('grantSave').onclick = function () {
+          send({
+            action: 'grant', id: user.id, service: service.id,
+            blocked: el('grantState').value === 'blocked',
+            starts_at: startOfDay(el('grantStart').value),
+            expires_at: endOfDay(el('grantEnd').value),
+            note: el('grantNote').value
+          }, el('grantSave'));
+        };
+        el('grantReset').onclick = function () { send({ action: 'grant', id: user.id, service: service.id, remove: true }, el('grantReset')); };
+        el('grantCancel').onclick = function () { dialog.close(); };
+        dialog.showModal();
+      }
+
+      var allUsers = [];
+      var ACTION_LABELS = {
+        'admin.create': 'Hisob yaratildi', 'admin.update': 'Hisob o‘zgardi', 'admin.password': 'Parol almashtirildi',
+        'admin.delete': 'Hisob o‘chirildi', 'admin.set-admin': 'Admin huquqi', 'admin.grant': 'Servis ruxsati',
+        'staff.create': 'Xodim qo‘shildi', 'staff.update': 'Xodim o‘zgardi', 'staff.delete': 'Xodim o‘chirildi',
+        'erp.restore': 'ERP zaxiradan tiklandi', 'service.open': 'Servisga kirdi'
+      };
+      function emailOf(id) {
+        var u = allUsers.filter(function (x) { return x.id === id; })[0];
+        return u ? (u.email || u.login || id) : (id || '—');
+      }
+      async function loadAudit() {
+        var session = (await client.auth.getSession()).data.session;
+        if (!session) return;
+        var target = el('auditUser').value;
+        var response = await fetch('/api/admin/users?audit=1&limit=300' + (target ? '&target=' + encodeURIComponent(target) : ''), {
+          headers: { Authorization: 'Bearer ' + session.access_token }
+        });
+        var payload = {};
+        try { payload = await response.json(); } catch (_) {}
+        if (!response.ok) { el('auditError').textContent = payload.error || ('HTTP ' + response.status); return; }
+        var events = payload.events || [];
+        el('auditError').textContent = '';
+        el('auditLabel').textContent = '(' + events.length + ')';
+        el('auditRows').innerHTML = events.length ? events.map(function (e) {
+          var details = Object.assign({}, e.details || {});
+          if (e.service) details.service = e.service;
+          return '<tr><td class="muted">' + esc(fmtDate(e.at)) + '</td><td>' + esc(e.actor_email || emailOf(e.actor_id)) + '</td><td>' +
+            esc(ACTION_LABELS[e.action] || e.action) + '</td><td>' + esc(e.target_email || emailOf(e.target_id)) + '</td><td><code>' +
+            esc(JSON.stringify(details)) + '</code></td></tr>';
+        }).join('') : '<tr><td colspan="5" class="muted">Hozircha yozuv yo‘q.</td></tr>';
+      }
+      el('auditReload').onclick = function () { loadAudit().catch(function (e) { el('auditError').textContent = e.message; }); };
+      el('auditUser').onchange = el('auditReload').onclick;
 
       // Which owners currently have their employee sub-table expanded.
       var expandedOwners = {};
@@ -245,7 +387,7 @@
       function staffPanelRow(owner, staff) {
         var tr = document.createElement('tr');
         var cell = document.createElement('td');
-        cell.colSpan = 8;
+        cell.colSpan = 9;
         cell.style.cssText = 'background:rgba(255,255,255,.03);padding:12px 14px';
         var heading = document.createElement('div');
         heading.className = 'muted';
@@ -298,6 +440,7 @@
               (user.is_admin ? '<span class="badge adm">Admin</span>' : '') + '</td>' +
             '<td></td>' +
             '<td></td>' +
+            '<td></td>' +
             '<td class="muted">' + expiryLabel + '</td>' +
             '<td class="muted">' + fmtDate(user.last_sign_in_at) + '</td>' +
             '<td></td>';
@@ -327,7 +470,22 @@
           });
           productsCell.appendChild(pills);
 
-          var staffCell = tr.children[4];
+          var servicesCell = tr.children[4];
+          var svcPills = document.createElement('div');
+          svcPills.className = 'pills';
+          SERVICE_LABELS.forEach(function (service) {
+            var state = serviceState(user, service.id);
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'svc ' + state.cls;
+            b.textContent = service.label;
+            b.title = service.label + ': ' + state.text + ' — o‘zgartirish uchun bosing';
+            b.onclick = function () { openGrant(user, service); };
+            svcPills.appendChild(b);
+          });
+          servicesCell.appendChild(svcPills);
+
+          var staffCell = tr.children[5];
           if (!staff.length) {
             staffCell.innerHTML = '<span class="muted">—</span>';
           } else {
@@ -442,8 +600,15 @@
           hideSplash();
           el('app').style.display = 'block';
           el('denied').style.display = 'none';
-          renderRows(data.users || []);
+          allUsers = data.users || [];
+          renderRows(allUsers);
           el('listError').textContent = '';
+          var picker = el('auditUser');
+          var chosen = picker.value;
+          picker.innerHTML = '<option value="">Barcha foydalanuvchilar</option>' + allUsers.filter(function (u) { return !u.is_staff; })
+            .map(function (u) { return '<option value="' + esc(u.id) + '">' + esc(u.email) + '</option>'; }).join('');
+          picker.value = chosen;
+          loadAudit().catch(function (e) { el('auditError').textContent = e.message; });
         } catch (error) {
           if (error.status === 403 || error.status === 401) showDenied(error.message);
           else if (error.status === 500) showDenied(error.message);

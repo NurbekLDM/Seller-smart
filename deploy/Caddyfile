@@ -45,11 +45,14 @@ erp.{$APP_DOMAIN} {
 }
 
 # Kartochka Studio. Needs its own DNS A record (kartochka.<domain> → this
-# server). Behind a password: it fetches pages for whoever uses it.
+# server). Only for SellerSmart accounts that have the "kartochka" service
+# (set on /admin): every request is checked by the app (server/services.mjs:
+# signed sr-svc cookie + the grant, re-checked each minute); without access
+# the visitor goes to https://<domain>/app.html, which renews it and returns.
 kartochka.{$APP_DOMAIN} {
 	encode zstd gzip
-	basic_auth {
-		{$KARTOCHKA_USER} {$KARTOCHKA_HASH}
+	forward_auth app:3000 {
+		uri /api/gate/check?service=kartochka
 	}
 	reverse_proxy kartochka:8765 {
 		# The studio answers POSTs that run several minutes (image generation).

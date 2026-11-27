@@ -5,9 +5,9 @@ Uzum sotuvchilari uchun SellerSmart mahsulotlari — bitta repoda.
 | Papka | Nima | Holati |
 | --- | --- | --- |
 | `public/`, `src/`, `scripts/`, `api/`, `middleware.js`, `supabase/` | **Smart Retail — Analitika + ERP** (sellersmart.uz). Supabase login, sinxron baza, admin va xodimlar | Serverda ishlayapti |
-| `server/` | Node server: `public/`, himoya (middleware) va `/api` ni beradi (Vercel o'rnida) | Serverda ishlayapti |
+| `server/` | Node server: `public/`, himoya (middleware), `/api`, ERP 119.3 chat serveri (`chat119.mjs`) va servis gate (`services.mjs`: Kartochka, `/diet`) | Serverda ishlayapti |
 | `deploy/` | Server o'rnatish (self-hosted Supabase + Caddy), ma'lumot ko'chirish skriptlari. Yo'riqnoma: [deploy/SERVER.md](deploy/SERVER.md) | Ishlatilgan |
-| `kartochka-studio/` | **Kartochka Studio v6** — Uzum/boshqa sayt havolasidan UZ/RU kartochka (Python, OpenAI). Serverda `kartochka.<domen>` da, parol bilan | Yangi |
+| `kartochka-studio/` | **Kartochka Studio v6** — Uzum/boshqa sayt havolasidan UZ/RU kartochka (Python, OpenAI). Serverda `kartochka.<domen>` da, SellerSmart hisobi bilan (admin panelda servis yoqiladi) | Yangi |
 | `releases/smart-retail-v118/` | Ishlab chiquvchidan kelgan **v118**: Analitika va ERP alohida HTML fayllar + tekshiruv skriptlari | Hali saytga ulanmagan |
 | `releases/sellersmart-erp-119.3/`, `erp119/` | **SellerSmart ERP 119.3**: ishlab chiquvchining HTML fayli (o'zgartirilmaydi) va uni serverga ulovchi adapter. Serverda `erp.<domen>` da, SellerSmart hisobi bilan kirish, ma'lumot serverda (`erp119_kv`). Yo'riqnoma: [deploy/SERVER.md](deploy/SERVER.md) | Server bilan sinxron |
 | `releases/android/` | **SellerSmart ERP 119.2** Android APK | Tayyor fayl |

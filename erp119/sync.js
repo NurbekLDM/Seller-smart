@@ -114,7 +114,15 @@
   let resolveReady, rejectReady;
   const ready = new Promise((ok, no) => { resolveReady = ok; rejectReady = no; });
   ready.catch(() => {});
-  root.SRCloud119 = { ready, get status() { return statusInfo(); } };
+  /* The ERP (patched by server/erp119.mjs) asks erpUserId() which employee
+     to open as (null: the administrator), and calls employeeSaved() after
+     the owner saves an employee. */
+  root.SRCloud119 = {
+    ready,
+    get status() { return statusInfo(); },
+    erpUserId: () => erpUserId,
+    employeeSaved: (employee, password, creating) => { employeeSaved(employee, password, creating).catch((e) => toast(String(e.message || e), true)); }
+  };
 
   function say(text) {
     const el = doc.getElementById('message');
@@ -143,8 +151,14 @@
   /* ------------------------------------------------------------- state -- */
 
   let ws = null;             // workspace id (owner's user id)
+  let epoch = 0;             // goes up each time a backup is restored onto the server
+  let wsOwner = false;       // this account owns the workspace (else: staff)
+  let erpUserId = null;      // staff: the ERP employee this account opens as
   let userId = null;
   let email = '';
+  // The id the ERP binds its local data to: a restore makes a new one, so
+  // every device replaces its copy with the restored data.
+  const wsId = () => (epoch ? ws + ':r' + epoch : ws);
   const known = new Map();   // server key -> { rev, value } as last agreed with the server
   const pending = new Set(); // server keys changed here and not yet accepted
   const remoteNewer = new Set();
@@ -162,7 +176,7 @@
   function saveState() {
     const revs = {};
     for (const [k, v] of known) if (v.rev != null) revs[k] = v.rev;
-    lsSet(STATE_KEY, JSON.stringify({ ws, user: userId, revs, dirty: [...pending] }));
+    lsSet(STATE_KEY, JSON.stringify({ ws, epoch, owner: wsOwner, user: userId, revs, dirty: [...pending] }));
   }
 
   /* ----------------------------------------------------------- helpers -- */
@@ -306,6 +320,7 @@
 
   function flush() {
     if (inflight) return inflight;
+    if (mode === 'restored') { render(); return Promise.resolve(); }
     if (!owner || paused || !ws || !pending.size) { updateMode(); return Promise.resolve(); }
     inflight = (async () => {
       try {
@@ -314,6 +329,15 @@
         if (!pending.size) lastError = '';
         if (mode !== 'auth') mode = pending.size ? 'pending' : 'synced';
       } catch (error) {
+        if (/workspace was restored/.test(error.message || '')) {
+          // A backup was restored onto the server after this page loaded:
+          // its edits belong to the old data. Stop; the chip asks to reload.
+          mode = 'restored';
+          lastError = 'Server baza zaxiradan tiklangan. Sahifani yangilang.';
+          inflight = null;
+          render();
+          return;
+        }
         if (error.code === 'PGRST301' || error.status === 401 || /JWT|jwt/.test(error.message)) {
           const { data } = await client.auth.refreshSession().catch(() => ({ data: {} }));
           if (!data?.session) mode = 'auth';
@@ -350,7 +374,7 @@
       saveState();
       if (!entries.length) return;
       const sent = new Map(entries.map((e) => [e.key, e]));
-      const results = await rpc('erp119_put', { p_entries: entries, p_device: DEVICE });
+      const results = await rpc('erp119_put', { p_entries: entries, p_device: DEVICE, p_epoch: epoch });
       for (const r of results || []) {
         const e = sent.get(r.key);
         if (!e) continue;
@@ -438,14 +462,28 @@
       pending: ['#b45309', '● Yuborilmoqda: ' + n],
       offline: ['#475569', '● Internet yo‘q — navbatda: ' + n],
       error: ['#b91c1c', '● Saqlash xatosi — navbatda: ' + n],
-      auth: ['#b91c1c', '● Qayta kiring — navbatda: ' + n]
+      auth: ['#b91c1c', '● Qayta kiring — navbatda: ' + n],
+      restored: ['#1d4ed8', '↻ Baza zaxiradan tiklandi — yangilash']
     }[mode] || ['#475569', mode];
-    chip.style.background = remoteNewer.size ? '#1d4ed8' : view[0];
-    chip.textContent = remoteNewer.size ? '↻ Boshqa qurilmada o‘zgarish bor — yangilash' : view[1];
+    const newer = remoteNewer.size && mode !== 'restored';
+    chip.style.background = newer ? '#1d4ed8' : view[0];
+    chip.textContent = newer ? '↻ Boshqa qurilmada o‘zgarish bor — yangilash' : view[1];
     chip.title = lastError || '';
   }
 
+  // Short notice above the status chip (employee accounts, chat import).
+  function toast(text, bad) {
+    if (!doc.body) return;
+    const n = doc.createElement('div');
+    n.setAttribute('role', bad ? 'alert' : 'status');
+    n.style.cssText = 'position:fixed;left:10px;bottom:48px;z-index:2147483601;max-width:min(420px,calc(100vw - 20px));padding:10px 14px;border-radius:10px;font:13px/1.4 system-ui;color:#fff;box-shadow:0 6px 24px #0007;background:' + (bad ? '#b91c1c' : '#15803d');
+    n.textContent = text;
+    doc.body.append(n);
+    root.setTimeout(() => n.remove(), bad ? 9000 : 5000);
+  }
+
   function toggleMenu() {
+    if (mode === 'restored') { root.location.reload(); return; }
     if (remoteNewer.size && !pending.size) { root.location.reload(); return; }
     if (menu) { menu.remove(); menu = null; return; }
     menu = doc.createElement('div');
@@ -473,7 +511,154 @@
     let rev = 0;
     for (const v of known.values()) if (v.rev != null && Number(v.rev) > rev) rev = Number(v.rev);
     const label = { synced: 'Serverda saqlangan', pending: 'Yuborilmoqda', offline: 'Internet yo‘q', error: 'Saqlash xatosi', auth: 'Qayta kirish kerak', starting: 'Ulanmoqda' }[mode] || mode;
-    return { workspaceId: ws, state: mode, label, pending: pending.size, revision: rev };
+    return { workspaceId: wsId(), state: mode, label, pending: pending.size, revision: rev };
+  }
+
+  /* --------------------------------------------------------- employees -- */
+
+  const norm = (v) => String(v ?? '').trim().normalize('NFKC').toLowerCase();
+  const USERS_KEY = 'srerp_auth_users_v6';
+
+  function loginOf(mail) {
+    const e = String(mail || '').toLowerCase();
+    const suffix = '@' + String(config.staffEmailDomain || 'staff.sellersmart.uz').toLowerCase();
+    return e.endsWith(suffix) ? e.slice(0, -suffix.length) : e;
+  }
+
+  /* A staff account opens the ERP as the active employee with the same
+     login; the owner opens as the administrator (erpUserId stays null).
+     Returns an error text when there is no such employee. */
+  function resolveIdentity(usersText) {
+    erpUserId = null;
+    if (wsOwner) return '';
+    let list = [];
+    try { list = JSON.parse(usersText || '[]') || []; } catch (_) { list = []; }
+    const login = loginOf(email);
+    const me = Array.isArray(list) && list.find((u) => u && u.active !== false && !u.archived && norm(u.username) === login);
+    if (!me) {
+      return 'ERP xodimlari ro‘yxatida "' + login + '" loginli faol xodim yo‘q. Egasi ERP → Xodimlar oynasida shu login bilan xodim qo‘shsin (yoki blokdan chiqarsin).\n' +
+        'В списке сотрудников ERP нет активного сотрудника с логином "' + login + '".';
+    }
+    erpUserId = me.id;
+    return '';
+  }
+
+  async function bearer() {
+    const { data } = await client.auth.getSession();
+    const token = data?.session?.access_token;
+    if (!token) throw Object.assign(new Error('Sessiya tugagan, qayta kiring.'), { status: 401 });
+    return token;
+  }
+
+  async function api(path, init = {}) {
+    const res = await fetch(path, {
+      ...init,
+      headers: { authorization: 'Bearer ' + (await bearer()), ...(init.body && !(init.body instanceof Blob) ? { 'content-type': 'application/json' } : {}), ...(init.headers || {}) }
+    });
+    let data = {};
+    try { data = await res.json(); } catch (_) { /* empty */ }
+    if (!res.ok) throw Object.assign(new Error(data.error || 'HTTP ' + res.status), { status: res.status });
+    return data;
+  }
+
+  /* The owner saved an employee in the ERP: their SellerSmart login (used
+     on any other device) follows. A new employee with a password gets an
+     account; a blocked or archived one is blocked; a new password is set. */
+  async function employeeSaved(employee, password, creating) {
+    if (!wsOwner || !employee || employee.id === 'AUTH-ROOT-ADMIN') return;
+    const login = norm(employee.username);
+    const active = employee.active !== false && !employee.archived;
+    if (!/^[a-z0-9_]{3,30}$/.test(login)) {
+      if (creating || password) toast('ERP saqlandi, lekin "' + login + '" logini bilan SellerSmart hisobi ochilmadi: login 3–30 belgi, faqat kichik lotin harf, raqam va _ bo‘lsin.', true);
+      return;
+    }
+    const { staff } = await api('/api/staff');
+    const found = (staff || []).find((s) => s.login === login);
+    if (!found) {
+      if (!active) return;
+      if (!password) {
+        toast('"' + login + '" boshqa qurilmadan kirishi uchun xodimga parol kiriting (kamida 8 belgi) va saqlang.', true);
+        return;
+      }
+      await api('/api/staff', { method: 'POST', body: JSON.stringify({ action: 'create', login, password, name: employee.fullName || login, modules: ['erp119'] }) });
+      toast('Xodim hisobi yaratildi. Kirish: erp sahifasida login "' + login + '" va shu parol.');
+      return;
+    }
+    const patch = { action: 'update', id: found.id, active, name: employee.fullName || login };
+    if (password) patch.password = password;
+    await api('/api/staff', { method: 'POST', body: JSON.stringify(patch) });
+    toast(active ? (password ? 'Xodim paroli serverda ham yangilandi.' : 'Xodim hisobi yangilandi.') : 'Xodim hisobi bloklandi: u endi kira olmaydi.');
+  }
+
+  /* -------------------------------------------------------------- chat -- */
+
+  /* The ERP's chat runs in "online" mode through this bridge to the chat
+     server (server/chat119.mjs): same requests as its own server protocol,
+     authenticated with the SellerSmart session instead of a cookie. */
+  const chatBridge = {
+    async request(path, options = {}) {
+      const init = { method: options.method || 'GET' };
+      if (options.body instanceof FormData) {
+        const file = options.body.get('file');
+        init.body = file;
+        init.headers = { 'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name || 'file') };
+      } else if (options.body) {
+        init.body = options.body;
+      }
+      return api('/api/chat119' + path, init);
+    },
+    subscribe(fn) {
+      let timer = 0;
+      const channel = client.channel('erp119-chat-' + ws)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'erp119_chat_head', filter: 'workspace_id=eq.' + ws }, () => {
+          root.clearTimeout(timer);
+          timer = root.setTimeout(fn, 150);
+        })
+        .subscribe();
+      return () => { client.removeChannel(channel); };
+    },
+    async downloadFile(id) {
+      const res = await fetch('/api/chat119/files/' + encodeURIComponent(id), { headers: { authorization: 'Bearer ' + (await bearer()) } });
+      if (!res.ok) { let m = ''; try { m = (await res.json()).error; } catch (_) { /* */ } throw Object.assign(new Error(m || 'Fayl ochilmadi.'), { status: res.status }); }
+      return res.blob();
+    }
+  };
+
+  // The chat this browser kept before the server existed moves to the
+  // (empty) server chat once, with its files.
+  async function importLocalChat() {
+    const flag = 'sr119-chat-imported:' + ws;
+    if (!wsOwner || lsGet(flag)) return;
+    const local = await readDb(spec('chat'));
+    const state = (local.stores.state || []).find((r) => r.key === 'main')?.value;
+    if (!state || !Array.isArray(state.rooms) || !state.rooms.length) { lsSet(flag, 'empty'); return; }
+    const { imported } = await api('/api/chat119/import', { method: 'POST', body: JSON.stringify({ state }) });
+    if (imported) {
+      let files = 0;
+      for (const row of local.stores.files || []) {
+        const f = row.value;
+        if (!f || !f.id || !(f.blob instanceof Blob)) continue;
+        try { await api('/api/chat119/import-file?id=' + encodeURIComponent(f.id), { method: 'POST', body: f.blob, headers: { 'content-type': 'application/octet-stream' } }); files++; } catch (_) { /* a file the chat no longer references */ }
+      }
+      toast('Bu qurilmadagi chat serverga ko‘chirildi (' + state.rooms.length + ' suhbat, ' + files + ' fayl).');
+    }
+    lsSet(flag, imported ? 'imported' : 'server-had-chat');
+  }
+
+  /* ----------------------------------------------------------- restore -- */
+
+  async function restoreEntries(snapshot) {
+    const entries = [];
+    for (const [key, value] of Object.entries(snapshot?.storage || {})) {
+      if (typeof value === 'string' && T.keyAllowed(key)) entries.push({ key, value });
+    }
+    for (const d of snapshot?.databases || []) {
+      const id = IDB_SYNC[d.name] || (Object.values(IDB_SYNC).includes(d.id) ? d.id : null);
+      if (!id || !d.stores || Object.values(d.stores).every((rows) => !rows || !rows.length)) continue;
+      const { blob } = await Codec.pack({ stores: d.stores });
+      entries.push({ key: 'idb:' + id, value: toBase64(new Uint8Array(await blob.arrayBuffer())) });
+    }
+    return entries;
   }
 
   /* ---------------------------------------------------------- provider -- */
@@ -481,7 +666,8 @@
   function makeProvider() {
     return {
       protocol: 1,
-      workspaceId: ws,
+      workspaceId: wsId(),
+      chat: chatBridge,
       async pause() {
         paused++;
         if (inflight) await inflight;
@@ -496,15 +682,51 @@
         const snapshot = await buildSnapshot(rows, { localFallback: false });
         for (const d of snapshot.databases) if (d.id === 'chat' || d.id === 'imports') Object.assign(d, emptyDb(d.id));
         const rev = rows.reduce((m, r) => Math.max(m, Number(r.revision) || 0), 0);
-        return { complete: true, scope: 'workspace', workspaceId: ws, snapshot, snapshotId: 'erp119-' + rev, revision: rev };
+        return { complete: true, scope: 'workspace', workspaceId: wsId(), snapshot, snapshotId: 'erp119-' + rev, revision: rev };
       },
-      async stageRestore() {
-        throw new Error('Serverga ZIP zaxirani tiklash hozircha yoqilmagan. Ma’lumotlar serverda saqlanadi; tiklash kerak bo‘lsa administratorga murojaat qiling.');
+      /* Restore a ZIP backup onto the server (owner only, checked by the
+         server): upload to a staging area, verify the count, then swap in
+         one transaction (supabase/2026-11-28-erp119-team.sql). The data it
+         replaces is archived on the server. */
+      async stageRestore({ snapshot, operationId }) {
+        if (!wsOwner) throw new Error('Zaxirani serverga faqat ish maydoni egasi tiklaydi.');
+        await flush();
+        const entries = await restoreEntries(snapshot);
+        if (!entries.length) throw new Error('Zaxirada tiklanadigan ERP ma’lumoti yo‘q.');
+        const stageId = root.crypto.randomUUID();
+        await rpc('erp119_restore_begin', { p_stage: stageId, p_operation: operationId, p_expected: entries.length });
+        try {
+          for (let i = 0; i < entries.length;) {
+            const batch = [];
+            let bytes = 0;
+            while (i < entries.length && batch.length < 200 && (bytes < BATCH_BYTES || !batch.length)) {
+              bytes += entries[i].value.length + entries[i].key.length;
+              batch.push(entries[i++]);
+            }
+            await rpc('erp119_restore_rows', { p_stage: stageId, p_entries: batch });
+          }
+          const check = await rpc('erp119_restore_verify', { p_stage: stageId });
+          if (!check || check.verified !== true) throw new Error('Server zaxirani to‘liq qabul qilmadi (' + (check?.received ?? 0) + '/' + entries.length + ').');
+        } catch (error) {
+          await rpc('erp119_restore_abort', { p_stage: stageId }).catch(() => {});
+          throw error;
+        }
+        return { operationId, verified: true, stageId };
       },
-      async commitRestore() {
-        throw new Error('Serverga tiklash yoqilmagan.');
+      async commitRestore({ operationId, stageId }) {
+        const r = await rpc('erp119_restore_commit', { p_stage: stageId });
+        // This page's data is now the old workspace: send nothing more.
+        pending.clear();
+        mode = 'restored';
+        lastError = 'Server baza zaxiradan tiklandi. Sahifani yangilang.';
+        lsSet(STATE_KEY, JSON.stringify({ ws, epoch: Number(r.epoch), user: userId, revs: {}, dirty: [] }));
+        render();
+        return { workspaceId: ws + ':r' + r.epoch, operationId, complete: true };
       },
       async restoreStatus(operationId) {
+        const r = await rpc('erp119_restore_status', { p_operation: operationId });
+        if (r?.state === 'committed') return { operationId, state: 'committed', complete: true, workspaceId: ws + ':r' + r.epoch };
+        if (r?.state === 'staging' || r?.state === 'staged') return { operationId, state: r.state, complete: false };
         return { operationId, state: 'aborted', cleanupComplete: true, complete: false };
       }
     };
@@ -528,6 +750,10 @@
       return;
     }
     ws = state.ws;
+    epoch = Number(state.epoch) || 0;
+    wsOwner = state.owner !== false;
+    const who = resolveIdentity(lsGet(USERS_KEY));
+    if (who) { fail(who); return; }
     for (const [k, rev] of Object.entries(state.revs || {})) known.set(k, { rev, value: undefined });
     for (const k of state.dirty || []) pending.add(k);
     owner = await writerOwner();
@@ -569,6 +795,21 @@
       return;
     }
     ws = status.workspace_id;
+    epoch = Number(status.epoch) || 0;
+    wsOwner = !!status.owner;
+
+    // Unsent edits made before a backup was restored onto the server belong
+    // to the old data: they are dropped (the server keeps the old data in
+    // its archive), never written into the restored workspace.
+    if (state.ws === ws && (Number(state.epoch) || 0) !== epoch && (state.dirty || []).length) {
+      if (!root.confirm('Server baza zaxiradan tiklangan. Bu qurilmadagi ' + state.dirty.length + ' ta yuborilmagan o‘zgarish eski bazaga tegishli va bekor qilinadi.\n\nБаза на сервере восстановлена из резервной копии. Неотправленные изменения этого устройства будут отменены.')) {
+        fail('Bekor qilindi. Avval ZIP zaxira oling, keyin qayta oching.');
+        return;
+      }
+      state.dirty = [];
+      state.revs = {};
+      lsSet(STATE_KEY, JSON.stringify({ ...state, epoch }));
+    }
 
     if (state.ws && state.ws !== ws && (state.dirty || []).length) {
       fail('Bu qurilmada boshqa hisobning serverga yetmagan ' + state.dirty.length + ' ta o‘zgarishi bor. Avval o‘sha hisob bilan kirib, ularni yuboring.\nНа устройстве есть неотправленные изменения другого аккаунта.');
@@ -580,6 +821,8 @@
 
     if (!owner) {
       // Another tab is the ERP's writer; this one only reads.
+      const who = resolveIdentity(lsGet(USERS_KEY));
+      if (who) { fail(who); return; }
       await T.boot();
       mode = 'synced';
       subscribeRealtime();
@@ -611,18 +854,20 @@
 
     say('Ma’lumotlar serverdan yuklanmoqda… / Загрузка данных с сервера…');
     const rows = await fetchAll();
+    const who = resolveIdentity(rows.find((r) => r.key === USERS_KEY)?.value);
+    if (who) { fail(who); return; }
     const bound = lsGet(BOUND_KEY);
-    const snapshot = await buildSnapshot(rows, { localFallback: bound === ws });
+    const snapshot = await buildSnapshot(rows, { localFallback: bound === wsId() });
 
     let replaceLocal = false;
-    if (localHasErpData() && bound !== ws) {
+    if (localHasErpData() && bound !== wsId()) {
       if (bound) replaceLocal = true;   // another account's copy; its data is on the server
       else if (root.confirm('Bu qurilmada serverga ulanmagan lokal ERP bazasi bor. U serverdagi baza bilan almashtiriladi.\n\nLokal bazani saqlab qolish kerak bo‘lsa, "Bekor qilish"ni bosing va avval ZIP zaxira oling.\n\nНа устройстве есть локальная база. Заменить её базой с сервера?')) replaceLocal = true;
       else { fail('Lokal baza saqlab qolindi. Avval ZIP zaxira oling, keyin qayta oching.'); return; }
     }
 
     say('ERP tayyorlanmoqda… / Подготовка ERP…');
-    await T.hydrateBeforeBoot(snapshot, ws, { replaceLocal });
+    await T.hydrateBeforeBoot(snapshot, wsId(), { replaceLocal });
     known.clear();
     pending.clear();
     for (const r of rows) known.set(r.key, { rev: r.revision, value: r.value, sig: r.key.startsWith('idb:') ? undefined : r.value });
@@ -646,6 +891,7 @@
     resolveReady();
     render();
     if (pending.size) schedule(IDB_DEBOUNCE_MS);
+    importLocalChat().catch((e) => toast('Lokal chatni serverga ko‘chirib bo‘lmadi: ' + (e.message || e), true));
   }
 
   start().catch((error) => fail(String(error?.message || error)));

@@ -31,6 +31,7 @@
 import { createReadStream } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { gunzipSync, gzipSync } from 'node:zlib';
 
 const LOADER_TAG = '<script id="portable-loader">';
 const WAIT_ANCHOR = 'await SRWriter101.ready;';
@@ -41,7 +42,58 @@ const WATCHDOG_ANCHOR = "show('Yuklash cho‘zildi.";
    page cannot reach the server at all. */
 const CONFIG_TAG = '<script src="/assets/app-config.js"></script>';
 
-export function patchErp119Html(source, { syncVersion = '' } = {}) {
+/* The ERP itself (the gzip+base64 payload the loader unpacks into its
+   iframe) is patched too, at three points of its employees module:
+
+     - who opens the ERP: the local edition always signs in as the
+       administrator; here the adapter names the employee (a staff account
+       opens as its own ERP employee, with that employee's permissions);
+     - after the owner saves an employee or changes their status, the
+       adapter is told, so the employee's SellerSmart login follows
+       (created with the password typed in the ERP, blocked with it).
+
+   Each anchor must match exactly once, or the page is not served. */
+const PAYLOAD_TAG = '<script type="application/octet-stream" id="portable-payload">';
+const INNER_PATCHES = [
+  {
+    name: 'identity',
+    find: "function openAdmin118(){\n const list=users(),active=u=>u.role==='ADMIN'&&u.active!==false&&!u.archived;\n const admin=list.find(u=>u.id==='AUTH-ROOT-ADMIN'&&active(u))||list.find(active);\n if(!admin)throw Error('Faol administrator hisobi topilmadi.');",
+    replace: "function sr119Hook(name,...args){try{const c=root.parent!==root&&root.parent.SRCloud119;if(c&&typeof c[name]==='function')return c[name](...args)}catch(e){console.warn('sr119',e)}}\nfunction openAdmin118(){\n const list=users(),active=u=>u.role==='ADMIN'&&u.active!==false&&!u.archived;\n const want119=sr119Hook('erpUserId');\n const admin=want119?list.find(u=>u.id===want119&&u.active!==false&&!u.archived):(list.find(u=>u.id==='AUTH-ROOT-ADMIN'&&active(u))||list.find(active));\n if(!admin)throw Error(want119?'Xodim hisobi ERP da topilmadi yoki bloklangan.':'Faol administrator hisobi topilmadi.');"
+  },
+  {
+    name: 'employee-saved',
+    find: 'put(UK,creating?[...users(),next]:users().map(u=>u.id===next.id?next:u));',
+    replace: "put(UK,creating?[...users(),next]:users().map(u=>u.id===next.id?next:u));sr119Hook('employeeSaved',safeUser(next),input.password||'',creating);"
+  },
+  {
+    name: 'employee-status',
+    find: "put(UK,users().map(x=>x.id===id?next:x));audit(archive?'ARCHIVE':'STATUS'",
+    replace: "put(UK,users().map(x=>x.id===id?next:x));sr119Hook('employeeSaved',safeUser(next),'',false);audit(archive?'ARCHIVE':'STATUS'"
+  }
+];
+
+export function patchErp119Inner(inner) {
+  let out = inner;
+  for (const p of INNER_PATCHES) {
+    const count = out.split(p.find).length - 1;
+    if (count !== 1) throw new Error(`erp119: ERP patch point "${p.name}" found ${count} times (expected 1)`);
+    out = out.replace(p.find, () => p.replace);
+  }
+  return out;
+}
+
+function patchPayload(source) {
+  const at = source.lastIndexOf(PAYLOAD_TAG);
+  if (at < 0) throw new Error('erp119: ERP payload not found in the vendor HTML');
+  const start = at + PAYLOAD_TAG.length;
+  const end = source.indexOf('</script>', start);
+  const inner = gunzipSync(Buffer.from(source.slice(start, end).trim(), 'base64')).toString('utf8');
+  const packed = gzipSync(Buffer.from(patchErp119Inner(inner), 'utf8'), { level: 9 }).toString('base64');
+  return source.slice(0, start) + packed + source.slice(end);
+}
+
+export function patchErp119Html(source, { syncVersion = '', inner = true } = {}) {
+  if (inner) source = patchPayload(source);
   const loaderAt = source.lastIndexOf(LOADER_TAG);
   if (loaderAt < 0) throw new Error('erp119: loader script not found in the vendor HTML');
   const waitAt = source.indexOf(WAIT_ANCHOR, loaderAt);
@@ -118,6 +170,7 @@ window.SMART_RETAIL_CONFIG = ${JSON.stringify({
 
   return {
     host,
+    htmlPath,
     matches: (url) => hosts.includes(url.hostname.toLowerCase()),
     async handle(req, res, url, pathname) {
       const secure = url.protocol === 'https:';

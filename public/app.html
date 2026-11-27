@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Mening servislarim — SellerSmart</title>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;padding:28px 16px;font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#e8eef9;background:radial-gradient(800px 480px at 80% 5%,rgba(104,92,246,.3),transparent 62%),radial-gradient(600px 420px at 12% 98%,rgba(4,177,192,.16),transparent 60%),#091120}
+    main{width:min(960px,100%);margin:0 auto}
+    header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:22px}
+    .mark{display:grid;place-items:center;width:46px;height:46px;border-radius:14px;background:linear-gradient(135deg,#655df5,#1593de);font-weight:850}
+    h1{margin:0;font-size:24px;letter-spacing:-.04em}
+    .who{color:#96a6bf;font-size:13px}
+    .grow{flex:1}
+    .ghost{height:38px;padding:0 14px;border:1px solid rgba(255,255,255,.16);border-radius:10px;background:transparent;color:#c3cfe0;font:inherit;font-size:13px;cursor:pointer}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px}
+    .card{display:flex;flex-direction:column;gap:10px;padding:20px;border:1px solid rgba(255,255,255,.1);border-radius:18px;background:rgba(13,22,40,.86);box-shadow:0 18px 60px rgba(0,0,0,.35)}
+    .card h2{margin:0;font-size:17px}
+    .card p{margin:0;color:#96a6bf;font-size:13px;line-height:1.5;flex:1}
+    .tag{align-self:flex-start;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:700}
+    .tag.active{background:rgba(34,197,94,.15);color:#6ee7a0}
+    .tag.expired,.tag.blocked{background:rgba(255,120,140,.14);color:#ff98a8}
+    .tag.not_started,.tag.none{background:rgba(148,163,184,.14);color:#b8c4d6}
+    .term{font-size:12px;color:#96a6bf}
+    .open{height:42px;border:0;border-radius:11px;background:linear-gradient(105deg,#6961fa,#3686ef);color:#fff;font:inherit;font-size:14px;font-weight:750;cursor:pointer}
+    .open:disabled{background:#1e293b;color:#64748b;cursor:not-allowed}
+    .error{min-height:20px;margin:14px 0;color:#ff788c;font-size:13px}
+    .note{margin-top:18px;color:#7f8ea6;font-size:12px;line-height:1.5}
+  </style>
+  <script src="assets/app-config.js"></script>
+  <script src="assets/vendor/supabase.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="mark">SS</div>
+      <div><h1>Mening servislarim</h1><div class="who" id="who">Yuklanmoqda…</div></div>
+      <div class="grow"></div>
+      <button class="ghost" type="button" id="logout">Chiqish</button>
+    </header>
+    <div id="error" class="error" role="alert"></div>
+    <div class="grid" id="grid" aria-live="polite"></div>
+    <p class="note">Servis ulanmagan yoki muddati tugagan bo‘lsa, administratorga murojaat qiling. Xodim hisobi egasining servislaridan foydalanadi.</p>
+  </main>
+  <script>
+  (function () {
+    'use strict';
+    var config = window.SMART_RETAIL_CONFIG || {};
+    var errorBox = document.getElementById('error');
+    if (!window.supabase || !config.supabaseUrl || !config.supabaseAnonKey) {
+      errorBox.textContent = 'Tizim sozlanmagan.';
+      return;
+    }
+    var client = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey);
+    var host = location.hostname.replace(/^www\./, '');
+    var SERVICES = {
+      erp: { name: 'SellerSmart ERP 119.3', text: 'Ombor, savdo, xodimlar, online chat va vazifalar. Ma’lumot serverda saqlanadi.', url: 'https://erp.' + host + '/' },
+      analytics: { name: 'Uzum Analitika', text: 'Do‘kon savdosi, reklama va foyda tahlili.', url: '/' },
+      diet: { name: 'Diet Seller', text: 'Ovqatlanish kundaligi va kaloriya hisoblagichi.', gate: true },
+      kartochka: { name: 'Kartochka Studio', text: 'Havoladan UZ/RU mahsulot kartochkasi va rasmlar.', gate: true }
+    };
+    var STATUS = { active: 'Faol', expired: 'Muddati tugagan', blocked: 'Bloklangan', not_started: 'Hali boshlanmagan', none: 'Ulanmagan' };
+    var params = new URLSearchParams(location.search);
+
+    function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function day(v) { return v ? new Date(v).toLocaleDateString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric' }) : ''; }
+
+    async function token() {
+      var r = await client.auth.getSession();
+      var s = r.data && r.data.session;
+      if (!s) { location.replace('/login.html?next=' + encodeURIComponent(location.pathname + location.search)); throw new Error('login'); }
+      return s.access_token;
+    }
+
+    // Kartochka and Diet are opened through the server gate, which sets the
+    // signed cookie they check (server/services.mjs).
+    async function openGated(service, next) {
+      var res = await fetch('/api/gate/issue', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (await token()) },
+        body: JSON.stringify({ service: service, next: next || '' })
+      });
+      var data = {};
+      try { data = await res.json(); } catch (_) { /* empty */ }
+      if (!res.ok) throw new Error(data.error || 'Servisni ochib bo‘lmadi.');
+      location.assign(data.url);
+    }
+
+    function render(list) {
+      var grid = document.getElementById('grid');
+      grid.innerHTML = list.map(function (s) {
+        var meta = SERVICES[s.service];
+        if (!meta) return '';
+        var term = s.expires_at ? 'Muddat: ' + day(s.expires_at) + ' gacha' : (s.allowed ? 'Muddatsiz' : '');
+        if (s.status === 'not_started' && s.starts_at) term = 'Boshlanadi: ' + day(s.starts_at);
+        return '<section class="card"><span class="tag ' + esc(s.status) + '">' + esc(STATUS[s.status] || s.status) + '</span>' +
+          '<h2>' + esc(meta.name) + '</h2><p>' + esc(meta.text) + '</p>' +
+          '<div class="term">' + esc(term) + '</div>' +
+          '<button class="open" type="button" data-service="' + esc(s.service) + '"' + (s.allowed ? '' : ' disabled') + '>Ochish</button></section>';
+      }).join('');
+      grid.onclick = function (event) {
+        var b = event.target.closest('button[data-service]');
+        if (!b || b.disabled) return;
+        var service = b.dataset.service;
+        var meta = SERVICES[service];
+        errorBox.textContent = '';
+        if (!meta.gate) { location.assign(meta.url); return; }
+        b.disabled = true;
+        openGated(service).catch(function (e) { if (e.message !== 'login') errorBox.textContent = e.message; b.disabled = false; });
+      };
+    }
+
+    async function start() {
+      await token();
+      var u = (await client.auth.getUser()).data.user;
+      document.getElementById('who').textContent = u ? u.email : '';
+      var r = await client.rpc('my_services');
+      if (r.error) throw new Error(r.error.message);
+      var list = r.data || [];
+      render(list);
+      // Sent here by Kartochka/Diet to renew access: go straight back.
+      var want = params.get('svc');
+      if (want && SERVICES[want] && SERVICES[want].gate) {
+        var s = list.find(function (x) { return x.service === want; });
+        if (s && s.allowed) await openGated(want, params.get('next'));
+        else errorBox.textContent = (SERVICES[want].name + ': ' + (STATUS[s ? s.status : 'none'] || '') + '. Administratorga murojaat qiling.');
+      }
+    }
+
+    document.getElementById('logout').onclick = function () {
+      client.auth.signOut().catch(function () {}).then(function () {
+        document.cookie = 'sr-access-token=; Path=/; Max-Age=0; SameSite=Lax' + (location.protocol === 'https:' ? '; Secure' : '');
+        location.replace('/login.html');
+      });
+    };
+
+    start().catch(function (e) { if (e.message !== 'login') errorBox.textContent = e.message || 'Xato.'; });
+  })();
+  </script>
+</body>
+</html>

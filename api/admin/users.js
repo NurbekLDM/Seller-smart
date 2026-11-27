@@ -9,6 +9,8 @@
      SUPABASE_ANON_KEY          — anon/publishable key (validates callers)
      SUPABASE_SERVICE_ROLE_KEY  — service_role / secret key (admin ops) */
 
+import { recordAudit } from '../_audit.js';
+
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -84,7 +86,29 @@ function validProducts(list) {
   return chosen;
 }
 
+/* The four services (supabase/2026-11-28-erp119-team.sql). A grant row
+   gives one service its own start/end date and a block switch; without a
+   row, ERP and Analitika follow the account's products, Diet and Kartochka
+   are off. */
+const SERVICES = ['erp', 'analytics', 'diet', 'kartochka'];
+
+async function grantsByUser() {
+  // A database without the 2026-11-28 migration has no table: no grants.
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/service_grants?select=*`, { headers: serviceHeaders });
+  if (!response.ok) return new Map();
+  const rows = await response.json();
+  const map = new Map();
+  for (const row of rows) {
+    if (!map.has(row.user_id)) map.set(row.user_id, {});
+    map.get(row.user_id)[row.service] = {
+      starts_at: row.starts_at, expires_at: row.expires_at, blocked: row.blocked, note: row.note || '', updated_at: row.updated_at
+    };
+  }
+  return map;
+}
+
 async function listUsers() {
+  const grants = await grantsByUser();
   const [authData, profiles, admins] = await Promise.all([
     readJson(await fetch(`${SUPABASE_URL}/auth/v1/admin/users?per_page=1000`, { headers: serviceHeaders })),
     // select=* rather than a column list: a column the database does not
@@ -110,6 +134,7 @@ async function listUsers() {
       owner_email: profile.workspace_owner ? (emailById.get(profile.workspace_owner) || '') : '',
       erp_modules: Array.isArray(profile.erp_modules) ? profile.erp_modules : [],
       products: productsOf(profile),
+      grants: grants.get(user.id) || {},
       created_at: user.created_at || '',
       last_sign_in_at: user.last_sign_in_at || ''
     };
@@ -231,6 +256,60 @@ async function deleteUser(callerId, body) {
   return { ok: true };
 }
 
+async function setGrant(callerId, body) {
+  const id = String(body.id || '');
+  if (!id) throw Object.assign(new Error('Foydalanuvchi tanlanmagan.'), { status: 400 });
+  const service = String(body.service || '');
+  if (!SERVICES.includes(service)) throw Object.assign(new Error('Noma’lum servis.'), { status: 400 });
+  if (body.remove === true) {
+    await readJson(await fetch(`${SUPABASE_URL}/rest/v1/service_grants?user_id=eq.${encodeURIComponent(id)}&service=eq.${service}`, {
+      method: 'DELETE',
+      headers: { ...serviceHeaders, prefer: 'return=minimal' }
+    }));
+    return { ok: true };
+  }
+  const startsAt = parseExpiry(body.starts_at);
+  const expiresAt = parseExpiry(body.expires_at);
+  if (startsAt && expiresAt && new Date(expiresAt) <= new Date(startsAt)) {
+    throw Object.assign(new Error('Tugash sanasi boshlanishdan keyin bo‘lsin.'), { status: 400 });
+  }
+  await readJson(await fetch(`${SUPABASE_URL}/rest/v1/service_grants?on_conflict=user_id,service`, {
+    method: 'POST',
+    headers: { ...serviceHeaders, prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({
+      user_id: id,
+      service,
+      starts_at: startsAt,
+      expires_at: expiresAt,
+      blocked: body.blocked === true,
+      note: String(body.note || '').slice(0, 300),
+      updated_at: new Date().toISOString(),
+      updated_by: callerId
+    })
+  }));
+  return { ok: true };
+}
+
+async function listAudit(query) {
+  const limit = Math.min(500, Math.max(1, Number(query.limit) || 200));
+  let path = `audit_events?select=*&order=at.desc&limit=${limit}`;
+  if (query.target && /^[0-9a-f-]{36}$/i.test(query.target)) path += `&or=(target_id.eq.${query.target},actor_id.eq.${query.target})`;
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers: serviceHeaders });
+  if (!response.ok) return [];
+  return response.json();
+}
+
+// What the audit log keeps of a request: never a password.
+function auditDetails(body) {
+  const out = {};
+  for (const [key, value] of Object.entries(body || {})) {
+    if (key === 'action' || key === 'id' || /password/i.test(key)) continue;
+    out[key] = value;
+  }
+  if (body && body.password) out.password_changed = true;
+  return out;
+}
+
 async function setAdmin(callerId, body) {
   const id = String(body.id || '');
   if (!id) throw Object.assign(new Error('Foydalanuvchi tanlanmagan.'), { status: 400 });
@@ -268,19 +347,34 @@ export default async function handler(req, res) {
     }
 
     if (req.method === 'GET') {
-      return res.status(200).json({ users: await listUsers(), me: { id: caller.id, email: caller.email } });
+      const query = req.query || {};
+      if (query.audit) return res.status(200).json({ events: await listAudit(query) });
+      return res.status(200).json({ users: await listUsers(), services: SERVICES, me: { id: caller.id, email: caller.email } });
     }
 
     if (req.method === 'POST') {
       const body = (req.body && typeof req.body === 'object') ? req.body : {};
-      switch (body.action) {
-        case 'create': return res.status(201).json(await createUser(body));
-        case 'update': return res.status(200).json(await updateProfile(caller.id, body));
-        case 'password': return res.status(200).json(await resetPassword(body));
-        case 'delete': return res.status(200).json(await deleteUser(caller.id, body));
-        case 'set-admin': return res.status(200).json(await setAdmin(caller.id, body));
-        default: return res.status(400).json({ error: 'Noma’lum amal.' });
-      }
+      const actions = {
+        create: () => createUser(body),
+        update: () => updateProfile(caller.id, body),
+        password: () => resetPassword(body),
+        delete: () => deleteUser(caller.id, body),
+        'set-admin': () => setAdmin(caller.id, body),
+        grant: () => setGrant(caller.id, body)
+      };
+      const run = actions[body.action];
+      if (!run) return res.status(400).json({ error: 'Noma’lum amal.' });
+      const result = await run();
+      await recordAudit({
+        actor_id: caller.id,
+        actor_email: caller.email,
+        action: 'admin.' + body.action,
+        target_id: body.action === 'create' ? result.id : (body.id || null),
+        target_email: body.action === 'create' ? result.email : null,
+        service: body.action === 'grant' ? body.service : null,
+        details: auditDetails(body)
+      }, req);
+      return res.status(body.action === 'create' ? 201 : 200).json(result);
     }
 
     return res.status(405).json({ error: 'HTTP metod qo‘llanmaydi.' });

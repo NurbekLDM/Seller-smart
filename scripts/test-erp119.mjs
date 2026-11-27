@@ -5,7 +5,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { patchErp119Html } from '../server/erp119.mjs';
+import { gunzipSync } from 'node:zlib';
+import { patchErp119Html, patchErp119Inner } from '../server/erp119.mjs';
+import { chatCoreSource, loadChatCore, chatUsers, erpEmployeeFor, loginOf } from '../server/chat119.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 
@@ -47,7 +49,7 @@ assert.equal(merge3(null, J([{ id: 1 }, { id: 1 }]), J([{ id: 2 }])), J([{ id: 1
 
 // Vendor HTML patch.
 const vendor = readFileSync(root + 'releases/sellersmart-erp-119.3/SellerSmart_ERP_119_3.html', 'utf8');
-const patched = patchErp119Html(vendor, { syncVersion: 't' });
+const patched = patchErp119Html(vendor, { syncVersion: 't', inner: false });
 const loaderAt = patched.lastIndexOf('<script id="portable-loader">');
 const head = patched.slice(0, loaderAt);
 assert.ok(head.endsWith('<script src="/erp119/sync.js?v=t"></script>\n'), 'adapter injected right before the loader');
@@ -58,6 +60,52 @@ assert.ok(patched.slice(loaderAt).includes('},180000);'), 'watchdog widened');
 assert.equal(patched.length - vendor.length > 0, true);
 assert.equal(patched.replace(/<script src="\/assets\/app-config\.js"><\/script>\n<script src="\/assets\/vendor\/supabase\.js"><\/script>\n<script src="\/erp119\/sync\.js\?v=t"><\/script>\n/, '')
   .replace('if(window.SRCloud119)await window.SRCloud119.ready;', '').replace('},180000);', '},30000);'), vendor, 'nothing else changed');
-assert.throws(() => patchErp119Html('<html></html>'), /loader script not found/);
+assert.throws(() => patchErp119Html('<html></html>', { inner: false }), /loader script not found/);
+assert.throws(() => patchErp119Html('<html></html>'), /payload not found/);
 
-console.log('test-erp119: merge and vendor patch OK');
+// The ERP itself: identity and employee hooks, each anchor exactly once.
+const TAG = '<script type="application/octet-stream" id="portable-payload">';
+const unpack = (html) => {
+  const at = html.lastIndexOf(TAG) + TAG.length;
+  return gunzipSync(Buffer.from(html.slice(at, html.indexOf('</script>', at)).trim(), 'base64')).toString('utf8');
+};
+const inner = unpack(vendor);
+const innerPatched = patchErp119Inner(inner);
+assert.equal(innerPatched.split("sr119Hook('erpUserId')").length - 1, 1, 'identity hook');
+assert.equal(innerPatched.split("sr119Hook('employeeSaved'").length - 1, 2, 'employee hooks');
+assert.equal(innerPatched.split('function sr119Hook(').length - 1, 1);
+assert.throws(() => patchErp119Inner(innerPatched), /found 0 times/, 'a patched ERP is not patched twice');
+const full = patchErp119Html(vendor, { syncVersion: 't' });
+assert.equal(unpack(full), innerPatched, 'served page carries the patched ERP');
+assert.ok(unpack(full).startsWith('<!DOCTYPE html>') && unpack(full).includes('id="writer101"'), 'loader integrity check still passes');
+
+// The ERP's chat core, as the chat server runs it.
+const C = loadChatCore(chatCoreSource(vendor));
+const employees = [
+  { id: 'AUTH-ROOT-ADMIN', username: 'admin', fullName: 'Egasi', role: 'ADMIN', active: true },
+  { id: 'E1', username: 'Kassir1', fullName: 'Ali', role: 'CUSTOM', active: true, access70: { views: ['pos', 'chat84'], actions: ['chat.send'], scope: { warehouses: ['*'], stores: ['*'] } } },
+  { id: 'E2', username: 'old', fullName: 'Vali', role: 'CUSTOM', active: false, access70: { views: ['chat84'], actions: ['chat.send'] } },
+  { id: 'E3', username: 'nochat', fullName: 'Gani', role: 'CUSTOM', active: true, access70: { views: ['pos'], actions: [] } }
+];
+assert.equal(erpEmployeeFor(employees, { owner: true }).id, 'AUTH-ROOT-ADMIN');
+assert.equal(erpEmployeeFor(employees, { owner: false, login: 'kassir1' }).id, 'E1', 'login match ignores case');
+assert.equal(erpEmployeeFor(employees, { owner: false, login: 'old' }), null, 'blocked employee does not open');
+assert.equal(erpEmployeeFor(employees, { owner: false, login: 'admin2' }), null);
+assert.equal(loginOf('Kassir1@staff.sellersmart.uz', 'staff.sellersmart.uz'), 'kassir1');
+assert.equal(loginOf('a@b.uz', 'staff.sellersmart.uz'), 'a@b.uz');
+const users = chatUsers(employees);
+const [admin, ali, , gani] = users;
+assert.equal(admin.role, 'admin');
+assert.deepEqual(ali.permissions, ['chat.send']);
+assert.deepEqual(gani.permissions, [], 'no chat view, no chat permission');
+const state = C.empty();
+const room = C.command(state, admin, users, { type: 'room.create', payload: { kind: 'group', title: 'Ombor', members: ['E1'] }, requestId: 'r1' });
+const again = C.command(state, admin, users, { type: 'room.create', payload: { kind: 'group', title: 'Ombor', members: ['E1'] }, requestId: 'r1' });
+assert.equal(again.id, room.id, 'same request id: same result (idempotent)');
+assert.equal(state.rooms.length, 1);
+C.command(state, ali, users, { type: 'message.send', payload: { roomId: room.id, text: 'Salom' }, requestId: 'm1' });
+assert.equal(state.messages.length, 1);
+assert.throws(() => C.command(state, gani, users, { type: 'message.send', payload: { roomId: room.id, text: 'x' }, requestId: 'm2' }), /ruxsat/i);
+assert.equal(C.visible(state, gani).rooms.length, 0, 'a non-member sees no room');
+
+console.log('test-erp119: merge, vendor patch, ERP hooks and chat core OK');

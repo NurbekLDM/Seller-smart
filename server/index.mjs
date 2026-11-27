@@ -26,7 +26,10 @@
      STAFF_EMAIL_DOMAIN         optional, default staff.sellersmart.uz
      ERP119_HOST                optional, e.g. erp.sellersmart.uz: serve
                                 ERP 119.3 with server storage on that host
-                                (server/erp119.mjs) */
+                                (server/erp119.mjs)
+     APP_DOMAIN                 optional, e.g. sellersmart.uz: account-based
+                                access to Kartochka Studio and /diet
+                                (server/services.mjs) */
 
 import { createServer } from 'node:http';
 import { createReadStream, readFileSync } from 'node:fs';
@@ -60,6 +63,9 @@ const API_ROUTES = new Map([
 ]);
 const GATED_PATHS = new Set(middlewareConfig.matcher);
 const { createErp119 } = await import(pathToFileURL(join(ROOT, 'server/erp119.mjs')).href);
+const { createChat119 } = await import(pathToFileURL(join(ROOT, 'server/chat119.mjs')).href);
+const { createServices } = await import(pathToFileURL(join(ROOT, 'server/services.mjs')).href);
+const { recordAudit } = await import(pathToFileURL(join(ROOT, 'api/_audit.js')).href);
 
 /* ----------------------------------------------------------- vercel.json */
 
@@ -281,6 +287,12 @@ const erp119 = createErp119({
   }
 });
 
+// The ERP 119.3 online chat server (server/chat119.mjs), on the ERP host.
+const chat119 = erp119 ? createChat119({ env: process.env, vendorHtmlPath: erp119.htmlPath }) : null;
+
+// Account-based access to Kartochka Studio and Diet Seller (server/services.mjs).
+const services = createServices({ env: process.env, root: ROOT, audit: (event) => recordAudit(event) });
+
 /* ---------------------------------------------------------------- server */
 
 const server = createServer(async (req, res) => {
@@ -306,7 +318,16 @@ const server = createServer(async (req, res) => {
       return res.end('ok');
     }
 
-    if (erp119 && erp119.matches(url)) return await erp119.handle(req, res, url, pathname);
+    if (services && services.matches(pathname)) return await services.handle(req, res, url, pathname);
+
+    if (erp119 && erp119.matches(url)) {
+      // The ERP's own Employees screen creates the staff logins.
+      if (pathname === '/api/staff' || pathname === '/api/staff/') {
+        return await serveApi(req, res, API_ROUTES.get('/api/staff'), url, { 'x-content-type-options': 'nosniff' });
+      }
+      if (chat119 && chat119.matches(pathname)) return await chat119.handle(req, res, url, pathname);
+      return await erp119.handle(req, res, url, pathname);
+    }
 
     const baseHeaders = headersFor(pathname, secure);
 
@@ -350,7 +371,9 @@ server.listen(PORT, () => {
     supabaseUrl: env('SUPABASE_URL') || null,
     publicSupabaseUrl: PUBLIC_SUPABASE_URL || null,
     serviceKey: Boolean(env('SUPABASE_SERVICE_ROLE_KEY')),
-    erp119Host: erp119 ? erp119.host : null
+    erp119Host: erp119 ? erp119.host : null,
+    chat119: Boolean(chat119),
+    serviceGate: services ? services.domain : null
   }));
 });
 

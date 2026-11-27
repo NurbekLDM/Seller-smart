@@ -110,8 +110,62 @@ Qanday ishlaydi (batafsil: `erp119/sync.js`, `server/erp119.mjs`):
 - Pastki chap burchakdagi belgi holatni ko'rsatadi: "Serverda saqlangan",
   "Yuborilmoqda", "Internet yo'q — navbatda: N", yoki "Boshqa qurilmada o'zgarish bor —
   yangilash". Uni bossangiz: hozir yuborish, serverdan qayta yuklash, chiqish.
-- Sinxronlanmaydi: chat bazasi (o'z serveri bor) va asl import fayllari (faqat import
-  qilingan qurilmada).
+- Sinxronlanmaydi: asl import fayllari (faqat import qilingan qurilmada). Chat esa
+  serverda (pastdagi bo'limga qarang).
 - Asl 119.3 fayli (`releases/sellersmart-erp-119.3/`) o'zgartirilmaydi; server uni
   ochishda adapterni ulaydi. Yangi versiya kelsa, faylni almashtirib `npm run check`
   ni ishga tushiring: ulash nuqtalari topilmasa, test xato beradi.
+
+## Servislar, xodimlar, chat va audit (2026-11-28)
+
+Bir marta yoqish:
+
+```sh
+cd /opt/smartseller/app && git pull
+docker exec -i supabase-db psql -X -U supabase_admin -d postgres -v ON_ERROR_STOP=1   < supabase/2026-11-28-erp119-team.sql
+# app konteyneri yangi APP_DOMAIN o'zgaruvchisi bilan qayta yaratiladi:
+sh /opt/smartseller/supabase/run.sh start
+sh /opt/smartseller/supabase/run.sh restart caddy
+```
+
+Migratsiyani qayta ishga tushirsa bo'ladi (ma'lumot o'chmaydi).
+
+**Admin panel (`/admin`)**
+
+- "Servislar" ustuni: har hisob uchun ERP / Analitika / Diet / Kartochka — holat
+  (ochiq/bloklangan), boshlanish va tugash sanasi, izoh. Tugmani bosib o'zgartiriladi.
+  "Standart qoida": ERP va Analitika — "Mahsulotlar" ustuni bo'yicha; Diet va
+  Kartochka — yopiq.
+- Xodim hisobi egasining servis muddatidan foydalanadi.
+- "Audit jurnali": hisob yaratish/o'zgartirish/o'chirish, parol almashtirish (parolning
+  o'zi yozilmaydi), servis ruxsati, xodimlar, ERP zaxiradan tiklash, servisga kirish.
+
+**Foydalanuvchi kabineti (`/app.html`)** — "Mening servislarim": 4 ta servis, holati va
+muddati, "Ochish" tugmasi.
+
+**Kartochka Studio** endi parol bilan emas, SellerSmart hisobi bilan ochiladi: avval
+`/admin` da hisobga "Kartochka" ni yoqing. Kirish `sr-svc` imzolangan cookie (12 soat)
+orqali, ruxsat har daqiqada qayta tekshiriladi — bloklansa yoki muddat tugasa, ko'pi
+bilan 1 daqiqada yopiladi. **Diet Seller** — `https://<domen>/diet` (shu qoida bilan).
+
+**ERP 119.3 xodimlari**
+
+- ERP ichida xodim qo'shilganda (egasi hisobidan) unga SellerSmart xodim hisobi
+  avtomatik yaratiladi: login = ERP logini, parol = ERP da kiritilgan parol. Bloklansa,
+  SellerSmart hisobi ham faolsiz qilinadi.
+- Xodim `erp.<domen>` ga o'z logini bilan kiradi va ERP da **o'z roli va ruxsatlari**
+  bilan ochiladi (admin bo'lib emas).
+- Server himoyasi: xodim xodimlar ro'yxatini va maydon ruxsatlarini o'zgartira olmaydi,
+  audit jurnaliga faqat qo'sha oladi (o'chira/qayta yoza olmaydi).
+
+**Online chat** — serverda (`erp119_chat_state`, fayllar `erp119_chat_files`, 10 MB gacha:
+PNG/JPG/WEBP/PDF/XLSX/CSV/TXT). Hamma qurilmada bir xil, yangi xabar boshqa qurilmaga
+darhol keladi. Brauzerdagi eski chat birinchi ochilishda serverga bir marta ko'chiriladi.
+
+**Zaxiradan tiklash** — ERP dagi "Server tiklash" endi haqiqiy: faqat egasi; eski
+ma'lumot `erp119_kv_archive` ga saqlanadi; tiklangandan keyin boshqa qurilmalardagi
+eski (yuborilmagan) o'zgarishlar serverga yozilmaydi — sahifa yangilashni so'raydi.
+
+**Cheklov:** ERP ichidagi qator/maydon darajasidagi ruxsatlar (qaysi ombor, qaysi
+ustun) brauzerda ERP o'zi tomonidan qo'llanadi. Server faqat yuqoridagi kalit darajasidagi
+qoidalarni majburlaydi: texnik bilimli xodim REST orqali workspace ma'lumotini o'qiy oladi.
